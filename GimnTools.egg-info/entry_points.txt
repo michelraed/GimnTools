@@ -1,0 +1,4 @@
+[console_scripts]
+gimntools-convert = GimnTools.bin.convert:main
+gimntools-info = GimnTools.bin.info:main
+gimntools-reconstruct = GimnTools.bin.reconstruct:main

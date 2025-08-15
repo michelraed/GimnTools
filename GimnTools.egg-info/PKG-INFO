@@ -1,60 +1,313 @@
-# Documentação Técnica da Biblioteca GimnTools
+Metadata-Version: 2.4
+Name: GimnTools
+Version: 1.0.0
+Summary: Biblioteca Python para processamento de imagens médicas e reconstrução tomográfica
+Home-page: https://github.com/michelraed/GimnTools.git
+Author: Desenvolvedor GimnTools
+Author-email: michelraed@gmail.com
+License: Apache-2.0
+Project-URL: Source, https://github.com/michelraed/GimnTools.git
+Keywords: medical imaging,tomography,reconstruction,sinogram,DICOM,image processing,PET,SPECT
+Platform: any
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: Intended Audience :: Healthcare Industry
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Topic :: Scientific/Engineering :: Medical Science Apps.
+Classifier: Topic :: Scientific/Engineering :: Image Processing
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.20.0
+Requires-Dist: matplotlib>=3.3.0
+Requires-Dist: scipy>=1.7.0
+Requires-Dist: numba>=0.54.0
+Requires-Dist: SimpleITK>=2.1.0
+Requires-Dist: itk>=5.2.0
+Requires-Dist: Pillow>=8.0.0
+Requires-Dist: scikit-image>=0.18.0
+Requires-Dist: h5py>=3.1.0
+Requires-Dist: tqdm>=4.60.0
+Requires-Dist: pandas>=1.3.0
+Requires-Dist: awkward>=1.2.0
+Requires-Dist: uproot>=5.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=6.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=2.10.0; extra == "dev"
+Requires-Dist: sphinx>=4.0.0; extra == "dev"
+Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "dev"
+Requires-Dist: black>=21.0.0; extra == "dev"
+Requires-Dist: flake8>=3.8.0; extra == "dev"
+Requires-Dist: mypy>=0.910; extra == "dev"
+Provides-Extra: jupyter
+Requires-Dist: jupyter>=1.0.0; extra == "jupyter"
+Requires-Dist: ipywidgets>=7.6.0; extra == "jupyter"
+Requires-Dist: plotly>=5.0.0; extra == "jupyter"
+Provides-Extra: docs
+Requires-Dist: sphinx>=4.0.0; extra == "docs"
+Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "docs"
+Requires-Dist: sphinx-autodoc-typehints>=1.12.0; extra == "docs"
+Requires-Dist: myst-parser>=0.15.0; extra == "docs"
+Provides-Extra: all
+Requires-Dist: sphinx>=4.0.0; extra == "all"
+Requires-Dist: mypy>=0.910; extra == "all"
+Requires-Dist: myst-parser>=0.15.0; extra == "all"
+Requires-Dist: pytest-cov>=2.10.0; extra == "all"
+Requires-Dist: flake8>=3.8.0; extra == "all"
+Requires-Dist: jupyter>=1.0.0; extra == "all"
+Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "all"
+Requires-Dist: plotly>=5.0.0; extra == "all"
+Requires-Dist: ipywidgets>=7.6.0; extra == "all"
+Requires-Dist: black>=21.0.0; extra == "all"
+Requires-Dist: sphinx-autodoc-typehints>=1.12.0; extra == "all"
+Requires-Dist: pytest>=6.0.0; extra == "all"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: license
+Dynamic: license-file
+Dynamic: platform
+Dynamic: project-url
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
 
-**Autor**: Michel Raed
-**Data**: 2025-06-19
+# GimnTools
 
-## 1. Introdução e Visão Geral
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://gimntools.readthedocs.io/)
+[![PyPI Version](https://img.shields.io/pypi/v/gimntools.svg)](https://pypi.org/project/gimntools/)
+
+##  Introdução e Visão Geral
 
 A GimnTools é uma biblioteca Python de código aberto projetada para o processamento de imagens médicas e reconstrução tomográfica. Ela oferece um conjunto de ferramentas robustas para manipulação de imagens, geração de sinogramas, aplicação de filtros e implementação de algoritmos de reconstrução. O objetivo desta documentação é fornecer um guia completo e exaustivo para desenvolvedores e pesquisadores que desejam utilizar a GimnTools em seus projetos.
 
-### Principais Funcionalidades
+## ✨ Principais Funcionalidades
 
-*   **Manipulação de Imagens**: A classe `image` permite carregar, salvar e manipular imagens médicas, incluindo metadados como espaçamento e origem.
-*   **Geração de Sinogramas**: O módulo `sinogramer` oferece funcionalidades para criar sinogramas a partir de dados de projeção, com suporte para diferentes configurações de detectores.
-*   **Reconstrução Tomográfica**: A biblioteca implementa algoritmos de reconstrução como MLEM, OSEM e FBP, disponíveis no módulo `gimnRec`.
-*   **Processamento de Imagem**: Inclui uma variedade de filtros espaciais, de frequência e morfológicos, além de ferramentas de interpolação e utilitários matemáticos.
-*   **Geração de Phantoms**: Ferramentas para criar phantoms digitais, como o Derenzo, para testes e calibração de algoritmos.
-*   **Entrada e Saída (I/O)**: Suporte para leitura e escrita de imagens no formato DICOM, com funcionalidades de normalização.
+### 🔬 Reconstrução Tomográfica
+- **Algoritmos de Reconstrução**: MLEM, OSEM, FBP (Filtered Back-Projection)
+- **Reconstrução por Integrais de Linha**: Implementação otimizada com Numba
+- **Matriz de Sistema**: Suporte para reconstrução baseada em matriz de sistema
+- **Correções**: Atenuação, dispersão e normalização
 
-## 2. Instalação e Requisitos
+### 📊 Processamento de Sinogramas
+- **Geração de Sinogramas**: Suporte para cristais monolíticos e segmentados
+- **Conversão de Coordenadas**: Transformação entre espaços de cristais e pixels
+- **Configuração de Sistema**: Gerenciamento flexível de geometrias de detectores
 
-Para instalar a GimnTools, é recomendável o uso de um ambiente virtual para evitar conflitos de dependência.
+### 🖼️ Processamento de Imagens
+- **Filtros Espaciais**: Convolução, filtros de vizinhança otimizados
+- **Filtros de Frequência**: Transformada de Fourier e filtragem espectral
+- **Filtros Morfológicos**: Operações de abertura, fechamento, erosão e dilatação
+- **Interpolação**: Métodos de reconstrução e reamostragem
 
-```bash
-python -m venv gimnenv
-source gimnenv/bin/activate
-```
+### 🎯 Fantomas e Simulação
+- **Fantoma de Derenzo**: Geração paramétrica de fantomas de teste
+- **Geometrias Customizadas**: Criação de formas geométricas diversas
+- **Fantomas Aleatórios**: Geração procedural para testes variados
 
-A instalação da biblioteca pode ser feita diretamente a partir do código-fonte:
+### 📁 I/O de Imagens Médicas
+- **DICOM**: Leitura e escrita usando SimpleITK e ITK
+- **Normalização**: Conversão entre tipos de dados e escalas
+- **Metadados**: Preservação de informações de espaçamento, origem e orientação
 
-```bash
-git clone <URL_DO_REPOSITORIO_GIMNTOOLS>
-cd GimnTools
-pip install .
-```
+## 🚀 Instalação Rápida
 
 ### Requisitos
+- Python 3.8 ou superior
+- Sistema operacional: Windows, macOS ou Linux
 
-A GimnTools depende das seguintes bibliotecas Python:
+### Instalação via pip
+```bash
+pip install GimnTools
+```
 
-*   `numpy`
-*   `SimpleITK`
-*   `itk`
-*   `numba`
-*   `matplotlib`
-*   `Pillow`
+### Instalação para Desenvolvimento
+```bash
+git clone https://github.com/usuario/GimnTools.git
+cd GimnTools
+pip install -e ".[dev]"
+```
+
+### Usando Scripts de Instalação
+```bash
+# Clone o repositório
+git clone https://github.com/usuario/GimnTools.git
+cd GimnTools
+
+# Execute o script de instalação
+python scripts/install.py --mode development --jupyter
+
+# Ou use o Makefile (Linux/macOS)
+make install-dev
+```
+
+## 🛠️ Scripts de Build e Deploy
+
+A biblioteca inclui scripts automatizados para facilitar o desenvolvimento:
+
+### Scripts Disponíveis
+
+#### 1. Script de Build (`scripts/build.py`)
+```bash
+# Build completo
+python scripts/build.py --all
+
+# Build apenas wheel
+python scripts/build.py --build-type wheel
+
+# Limpeza + build + testes
+python scripts/build.py --clean --check --install --test
+```
+
+#### 2. Script de Instalação (`scripts/install.py`)
+```bash
+# Instalação básica
+python scripts/install.py
+
+# Instalação para desenvolvimento
+python scripts/install.py --mode development --jupyter --docs
+
+# Criar ambiente virtual
+python scripts/install.py --venv
+```
+
+#### 3. Script de Deploy (`scripts/deploy.py`)
+```bash
+# Deploy para PyPI de teste
+python scripts/deploy.py --repository testpypi
+
+# Deploy para PyPI oficial (requer confirmação)
+python scripts/deploy.py --repository pypi --version 1.0.1
+
+# Apenas build (sem upload)
+python scripts/deploy.py --build-only
+```
+
+### Usando Makefile (Linux/macOS)
+
+```bash
+# Instalar para desenvolvimento
+make install-dev
+
+# Executar testes
+make test
+
+# Formatar código
+make format
+
+# Build completo
+make build
+
+# Deploy para PyPI de teste
+make upload-test
+
+# Limpar arquivos temporários
+make clean
+```
+
+## 📁 Estrutura do Projeto
+
+```
+GimnTools/
+├── GimnTools/               # Pacote principal
+│   ├── __init__.py
+│   └── ImaGIMN/            # Módulo principal
+│       ├── image.py         # Classe base para imagens
+│       ├── IO/             # Entrada e saída
+│       │   ├── MIIO.py     # I/O de imagens médicas
+│       │   └── GimnIO.py   # I/O geral
+│       ├── sinogramer/     # Geração de sinogramas
+│       │   ├── sinogramer.py
+│       │   ├── conf.py
+│       │   └── systemSpace.py
+│       ├── gimnRec/        # Reconstrução
+│       │   ├── reconstructors/
+│       │   ├── backprojectors.py
+│       │   ├── projectors.py
+│       │   └── corrections.py
+│       ├── processing/     # Processamento
+│       │   ├── filters/    # Filtros
+│       │   ├── interpolators/
+│       │   ├── tools/      # Ferramentas matemáticas
+│       │   └── ploter/     # Visualização
+│       └── phantoms/       # Fantomas
+│           ├── derenzzo.py
+│           ├── random.py
+│           └── geometries/
+├── scripts/                # Scripts de automação
+│   ├── build.py           # Script de build
+│   ├── install.py         # Script de instalação
+│   └── deploy.py          # Script de deploy
+├── docs/                  # Documentação
+├── tests/                 # Testes
+├── examples/              # Exemplos
+├── setup.py              # Configuração setuptools
+├── pyproject.toml        # Configuração moderna
+├── requirements.txt      # Dependências
+├── requirements-dev.txt  # Dependências dev
+├── Makefile             # Automação (Unix)
+└── README.md            # Este arquivo
+```
+
+## 🔧 Dependências
+
+### Principais
+- **numpy** (≥1.20.0): Computação numérica
+- **scipy** (≥1.7.0): Algoritmos científicos
+- **matplotlib** (≥3.3.0): Visualização
+- **numba** (≥0.54.0): Compilação JIT para performance
+- **SimpleITK** (≥2.1.0): Processamento de imagens médicas
+- **itk** (≥5.2.0): Toolkit de imagens
+- **Pillow** (≥8.0.0): Manipulação de imagens
+- **scikit-image** (≥0.18.0): Processamento de imagens
+- **h5py** (≥3.1.0): Armazenamento HDF5
+- **tqdm** (≥4.60.0): Barras de progresso
+
+### Dependências de Desenvolvimento
+- **pytest**: Framework de testes
+- **sphinx**: Geração de documentação
+- **black**: Formatação de código
+- **flake8**: Linting
+- **mypy**: Verificação de tipos
+
+## 📚 Documentação
+
+A documentação completa está disponível em:
+- **Online**: [https://gimntools.readthedocs.io/](https://gimntools.readthedocs.io/)
+- **Local**: Execute `make docs` para gerar localmente
+
+### Tópicos da Documentação
+- **Guia do Usuário**: Introdução e conceitos básicos
+- **API Reference**: Documentação detalhada de todas as funções
+- **Tutoriais**: Exemplos passo a passo
+- **Guia do Desenvolvedor**: Como contribuir para o projeto
 
 
-## 3. Documentação Detalhada dos Módulos
 
-### 3.1. `ImaGIMN.IO`
+## Documentação Detalhada dos Módulos
+
+### 1. `ImaGIMN.IO`
 
 Responsável pelas operações de entrada e saída.
 
 *   **`MIIO.py`**: Classe de alto nível para manipulação de I/O de imagens médicas, especialmente DICOM. Usa `SimpleITK` e `ITK` como backend. Fornece funcionalidades essenciais como leitura, escrita e normalização de imagens.
 *   **`GimnIO.py`**: Utilitários de I/O de baixo nível, como criação de pastas e salvamento de arquivos JSON.
 
-### 3.2. `ImaGIMN.gimnRec`
+### 2. `ImaGIMN.gimnRec`
 
 Contém os algoritmos e componentes para a reconstrução tomográfica.
 
@@ -63,7 +316,7 @@ Contém os algoritmos e componentes para a reconstrução tomográfica.
 *   **`backprojectors.py`**: Contém funções para a retroprojeção (back-projection), o processo inverso da projeção, usado em algoritmos como FBP e iterativos.
 *   **`corrections.py`**: Funções para aplicar correções necessárias durante a reconstrução, como a correção do centro de rotação.
 
-#### 3.2.1. `ImaGIMN.gimnRec.reconstructors`
+#### 2.1. `ImaGIMN.gimnRec.reconstructors`
 
 Implementações concretas de algoritmos de reconstrução.
 
@@ -72,35 +325,36 @@ Implementações concretas de algoritmos de reconstrução.
 *   **`system_matrix_reconstruction.py`**: Reconstrutor que utiliza uma matriz de sistema pré-calculada para realizar as projeções e retroprojeções. Pode ser mais lento para gerar a matriz, mas mais rápido para iterar. Versão para CPU.
 *   **`system_matrix_reconstruction2.py`**: Uma segunda implementação (possivelmente experimental ou com otimizações diferentes) do reconstrutor baseado em matriz de sistema.
 
-### 3.3. `ImaGIMN.processing`
+### 3. `ImaGIMN.processing`
 
 Ferramentas para processamento e análise de imagens.
 
-#### 3.3.1. `ImaGIMN.processing.filters`
+#### 3.1. `ImaGIMN.processing.filters`
 
 *   **`spatial_filters.py`**: Contém filtros que operam diretamente na matriz de pixels. Inclui funções para convolução 2D, aplicação de filtros separáveis e extração de vizinhanças de pixels.
 *   **`frequency_filters.py`**: Implementa filtros no domínio da frequência, como o filtro Gaussiano e o Butterworth. Útil para suavização e realce de bordas.
 *   **`morphological_filters.py`**: Funções para morfologia matemática (Erosão, Dilatação, Abertura e Fechamento), usadas para análise de formas e estruturas na imagem.
 
-#### 3.3.2. `ImaGIMN.processing.interpolators`
+#### 3.2. `ImaGIMN.processing.interpolators`
 
 *   **`reconstruction.py`**: Fornece diferentes métodos de interpolação (Vizinho Mais Próximo, Bilinear, Spline Beta) que são cruciais para algoritmos de rotação e reconstrução, garantindo a precisão ao acessar valores de pixels em coordenadas não inteiras.
 
-#### 3.3.3. `ImaGIMN.processing.tools`
+#### 3.3. `ImaGIMN.processing.tools`
 
 *   **`kernels.py`**: Funções para gerar kernels (matrizes) usados em filtros de convolução, como kernels Gaussianos e Butterworth de diferentes tipos (passa-baixa, passa-alta).
 *   **`math.py`**: Funções matemáticas essenciais, como convolução e deconvolução no domínio da frequência (via FFT) e rotação de imagem com diferentes interpoladores.
 *   **`utils.py`**: Utilitários diversos, com destaque para a função de redimensionamento de imagem (`resize`) que suporta múltiplos métodos de interpolação.
 
-#### 3.3.4. `ImaGIMN.processing.ploter`
+#### 3.4. `ImaGIMN.processing.ploter`
 
 *   **`ploter.py`**: Ferramenta de visualização para plotar múltiplos slices de um volume 3D (como um sinograma ou uma imagem reconstruída) em uma grade, facilitando a inspeção visual.
 
-### 3.4. `ImaGIMN.phantoms`
+### 4. `ImaGIMN.phantoms`
 
 *   **`derenzzo.py`**: Contém classes para a geração de phantoms de Derenzo, que são padrões de teste padrão em imagem médica para avaliar a resolução espacial de um sistema.
 
-## 4. Exemplos de Uso Práticos
+
+##  Exemplos de Uso Práticos
 
 ### Exemplo 1: Criação de imagens Aleatórias
 
@@ -412,9 +666,7 @@ print(f"✅ System matrix reconstructor test completed successfully. Images save
 ```
 
 
-
-
-## 5. API Reference
+##  API Reference
 
 ### `ImaGIMN.IO.MIIO`
 
@@ -484,13 +736,43 @@ print(f"✅ System matrix reconstructor test completed successfully. Images save
 | --- | --- | --- | --- |
 | `mlem_tv` | MLEM com regularização Total Variation. | `iterations` (int), `beta` (float), `angles` (ndarray), `verbose` (bool) | `ndarray` |
 
-## 6. Contribuições e Desenvolvimento
 
-Agradecemos o interesse em contribuir para a GimnTools! Para contribuir, por favor, siga os seguintes passos:
+## 🤝 Contribuindo
 
-1.  Faça um fork do repositório.
-2.  Crie uma nova branch para a sua feature (`git checkout -b feature/nova-feature`).
-3.  Faça o commit das suas alterações (`git commit -am 'Adiciona nova feature'`).
-4.  Faça o push para a branch (`git push origin feature/nova-feature`).
-5.  Abra um Pull Request.
+Contribuições são bem-vindas! Para contribuir:
+
+1. **Fork** o projeto
+2. **Clone** seu fork: `git clone https://github.com/seu-usuario/GimnTools.git`
+3. **Crie uma branch**: `git checkout -b feature/nova-funcionalidade`
+4. **Instale para desenvolvimento**: `make install-dev`
+5. **Faça suas alterações** e adicione testes
+6. **Execute testes**: `make test`
+7. **Formate o código**: `make format`
+8. **Commit**: `git commit -m "Adiciona nova funcionalidade"`
+9. **Push**: `git push origin feature/nova-funcionalidade`
+10. **Abra um Pull Request**
+
+### Diretrizes de Contribuição
+- Siga os padrões de código (black, flake8)
+- Adicione testes para novas funcionalidades
+- Atualize a documentação quando necessário
+- Use mensagens de commit descritivas
+
+## 📄 Licença
+
+Este projeto está licenciado sob a licença Apache 2.0. Veja o arquivo [LICENSE](LICENSE) para detalhes.
+
+## 🆘 Suporte
+
+- **Issues**: [GitHub Issues](https://github.com/usuario/GimnTools/issues)
+- **Discussões**: [GitHub Discussions](https://github.com/usuario/GimnTools/discussions)
+- **Email**: contato@gimntools.com
+
+
+
+
+**GimnTools** - Ferramentas avançadas para imagens médicas em Python.
+
+
+
 

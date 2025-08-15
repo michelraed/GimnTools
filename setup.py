@@ -73,11 +73,9 @@ setup(
     description="Biblioteca Python para processamento de imagens médicas e reconstrução tomográfica",
     long_description=read_file("README.md"),
     long_description_content_type="text/markdown",
-    url="https://github.com/usuario/GimnTools",
+    url="https://github.com/michelraed/GimnTools.git",
     project_urls={
-        "Bug Reports": "https://github.com/usuario/GimnTools/issues",
-        "Source": "https://github.com/usuario/GimnTools",
-        "Documentation": "https://gimntools.readthedocs.io/",
+        "Source": "https://github.com/michelraed/GimnTools.git",
     },
     packages=find_packages(),
     classifiers=[
@@ -122,7 +120,7 @@ setup(
         "coverage>=5.5",
         "hypothesis>=6.0.0",
     ],
-    license="MIT",
+    license="Apache-2.0",
     platforms=["any"],
     keywords=[
         "medical imaging",
