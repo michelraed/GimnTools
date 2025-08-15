@@ -1,0 +1,55 @@
+# MANIFEST.in - Especifica arquivos adicionais para incluir na distribuição
+
+# Documentação
+include README.md
+include LICENSE
+include CHANGELOG.md
+include CONTRIBUTING.md
+
+# Arquivos de configuração
+include pyproject.toml
+include setup.py
+include Makefile
+include requirements*.txt
+
+
+# Scripts
+recursive-include scripts *.py
+
+# Documentação
+recursive-include docs *.rst *.md *.py *.txt *.yml *.yaml
+recursive-include docs/_static *
+recursive-include docs/_templates *
+
+# Exemplos
+recursive-include examples *.py *.ipynb *.md
+recursive-include examples/data *
+
+# Dados da biblioteca
+recursive-include GimnTools/data *.json *.yaml *.yml *.txt
+recursive-include GimnTools/examples *.py
+
+# Testes
+include tests/*
+recursive-include tests/*
+
+# Configurações de desenvolvimento
+include .flake8
+include .pre-commit-config.yaml
+include tox.ini
+
+# Exclude patterns
+prune .git
+prune .github
+prune __pycache__
+prune *.egg-info
+prune build
+prune dist
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.orig
+global-exclude *.rej
+global-exclude *~
+global-exclude .DS_Store
+global-exclude .coverage
+global-exclude *.so

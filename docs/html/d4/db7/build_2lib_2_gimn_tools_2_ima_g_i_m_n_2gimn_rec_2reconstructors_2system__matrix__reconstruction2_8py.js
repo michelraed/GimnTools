@@ -1,0 +1,5 @@
+var build_2lib_2_gimn_tools_2_ima_g_i_m_n_2gimn_rec_2reconstructors_2system__matrix__reconstruction2_8py =
+[
+    [ "GimnTools.ImaGIMN.gimnRec.reconstructors.system_matrix_reconstruction2.compute_tv_gradient", "d5/d06/namespace_gimn_tools_1_1_ima_g_i_m_n_1_1gimn_rec_1_1reconstructors_1_1system__matrix__reconstruction2.html#a50100caef69dea3189d297ec5dc45e69", null ],
+    [ "GimnTools.ImaGIMN.gimnRec.reconstructors.system_matrix_reconstruction2.system_matrix", "d5/d06/namespace_gimn_tools_1_1_ima_g_i_m_n_1_1gimn_rec_1_1reconstructors_1_1system__matrix__reconstruction2.html#ae8d2ff0c674e9c1c0a95949b11e2f153", null ]
+];

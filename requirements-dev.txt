@@ -1,0 +1,55 @@
+# Dependências de desenvolvimento para GimnTools
+
+# Testes
+pytest>=6.0.0
+pytest-cov>=2.10.0
+pytest-mock>=3.6.0
+pytest-xdist>=2.2.0
+
+# Formatação e linting
+black>=21.0.0
+flake8>=3.8.0
+isort>=5.9.0
+pylint>=2.9.0
+
+# Verificação de tipos
+mypy>=0.910
+
+# Documentação
+sphinx>=4.0.0
+sphinx-rtd-theme>=0.5.0
+sphinx-autodoc-typehints>=1.12.0
+myst-parser>=0.15.0
+nbsphinx>=0.8.0
+
+# Notebooks Jupyter
+jupyter>=1.0.0
+ipywidgets>=7.6.0
+jupyterlab>=3.0.0
+
+# Visualização avançada
+plotly>=5.0.0
+seaborn>=0.11.0
+
+# Profiling e debugging
+line_profiler>=3.3.0
+memory_profiler>=0.58.0
+pdb++>=0.10.0
+
+# Controle de versão e automação
+pre-commit>=2.13.0
+bump2version>=1.0.0
+
+# Build e distribuição
+build>=0.5.0
+twine>=3.4.0
+wheel>=0.36.0
+
+# Utilitários
+rich>=10.0.0
+click>=8.0.0
+
+
+pandas>=1.3.0
+seaborn>=0.11.0
+uproot> 5.0.0

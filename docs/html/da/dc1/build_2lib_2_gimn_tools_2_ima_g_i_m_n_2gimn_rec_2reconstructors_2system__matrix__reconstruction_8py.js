@@ -1,0 +1,4 @@
+var build_2lib_2_gimn_tools_2_ima_g_i_m_n_2gimn_rec_2reconstructors_2system__matrix__reconstruction_8py =
+[
+    [ "GimnTools.ImaGIMN.gimnRec.reconstructors.system_matrix_reconstruction.system_matrix", "d3/da0/namespace_gimn_tools_1_1_ima_g_i_m_n_1_1gimn_rec_1_1reconstructors_1_1system__matrix__reconstruction.html#ab7829bce7a8b8e6306ae6cc8e9e5a814", null ]
+];

@@ -1,0 +1,26 @@
+var class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice =
+[
+    [ "__init__", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#abad54522658907ec3230decddf08dada", null ],
+    [ "__init__", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#abad54522658907ec3230decddf08dada", null ],
+    [ "draw_circle", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a60291d024f71b14ac8f91f8d00f7cf54", null ],
+    [ "draw_circle", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a60291d024f71b14ac8f91f8d00f7cf54", null ],
+    [ "draw_only_circle", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a4b01cd045dbff629f7c0e8a4c59382a7", null ],
+    [ "draw_only_circle", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a4b01cd045dbff629f7c0e8a4c59382a7", null ],
+    [ "get_image_matrix", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#ae48153a0567bedbb80710b0677ffad7b", null ],
+    [ "get_image_matrix", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#ae48153a0567bedbb80710b0677ffad7b", null ],
+    [ "save_image", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a406a8e63d98918af1b17fa6112fce454", null ],
+    [ "save_image", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a406a8e63d98918af1b17fa6112fce454", null ],
+    [ "circle_value", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a59f42e00238af6ca737dbb386751f7c7", null ],
+    [ "depth", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a40fbe8949b277afd0fac64228851b12a", null ],
+    [ "image", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a42cb5f5737262947250c709931232c69", null ],
+    [ "image_size", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a0d1dfe388c77a43db67816da60481ae4", null ],
+    [ "num_sections", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#ade910a4514ea65d6cfd349f2b3c21c87", null ],
+    [ "radius", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#acc620a89e606f875661525fd6365a421", null ],
+    [ "section_offsets", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a0e4a3bb6900fb4ca6afa15e7e06d901a", null ],
+    [ "sections", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a4f7876c94f5e92c3e124c7879812506e", null ],
+    [ "unit", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a382b9040d9c3849b9350104bb5b3acfc", null ],
+    [ "well_counts", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a730c5044b3741f8bde42e2c3874778b9", null ],
+    [ "well_diameters", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a1a96ab773fdb9d46935e075600598e3d", null ],
+    [ "well_separations", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#a9562c1c5b3b5b68140bff1b01db31166", null ],
+    [ "well_value", "d8/d2a/class_gimn_tools_1_1_ima_g_i_m_n_1_1phantoms_1_1derenzzo_1_1_derenzo_phantom_slice.html#af319dcb9c7c9852b719c8c1cee2a6745", null ]
+];

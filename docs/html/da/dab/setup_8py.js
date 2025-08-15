@@ -1,0 +1,26 @@
+var setup_8py =
+[
+    [ "setup.read_file", "dd/dc4/namespacesetup.html#a57e2bb7b732b6222479f89894abc8ae1", null ],
+    [ "setup.author", "dd/dc4/namespacesetup.html#ad50afb6ec7b2501164b80a0480596ded", null ],
+    [ "setup.author_email", "dd/dc4/namespacesetup.html#aa0684bedaf8c5c409060306e443a7742", null ],
+    [ "setup.classifiers", "dd/dc4/namespacesetup.html#a6b43ae64a9080a1ac074dbd3c294bf9d", null ],
+    [ "setup.description", "dd/dc4/namespacesetup.html#a2661f439a4a94ffdcd5e47ae1da0bb1d", null ],
+    [ "setup.entry_points", "dd/dc4/namespacesetup.html#a0afb2eb153236846e2dd516c55a0e0dd", null ],
+    [ "setup.EXTRAS_REQUIRE", "dd/dc4/namespacesetup.html#ab39dcea8aef2b937ce6d13aba894ecd8", null ],
+    [ "setup.extras_require", "dd/dc4/namespacesetup.html#a87e252e9065f460e9aef5218a999f5d3", null ],
+    [ "setup.include_package_data", "dd/dc4/namespacesetup.html#a3026a1b057528d1a10c60bd17e115a33", null ],
+    [ "setup.INSTALL_REQUIRES", "dd/dc4/namespacesetup.html#a6707ddacb27ee81d2728b879a8ccd040", null ],
+    [ "setup.install_requires", "dd/dc4/namespacesetup.html#a047d4e9f7b152e767f7bd459218fe1fd", null ],
+    [ "setup.keywords", "dd/dc4/namespacesetup.html#a55bd10e3116510cf80c41fe641064494", null ],
+    [ "setup.long_description", "dd/dc4/namespacesetup.html#a9ebe7fd07c3a4ff67a954bcd8838c42f", null ],
+    [ "setup.long_description_content_type", "dd/dc4/namespacesetup.html#a30b92824ab27aa5758a56bf8f20a35aa", null ],
+    [ "setup.name", "dd/dc4/namespacesetup.html#ab74e6bf80237ddc4109968cedc58c151", null ],
+    [ "setup.package_data", "dd/dc4/namespacesetup.html#a3082807deecba7a5edc23253ddfb584f", null ],
+    [ "setup.packages", "dd/dc4/namespacesetup.html#a5191bfd75a28371588f75471591d5500", null ],
+    [ "setup.project_urls", "dd/dc4/namespacesetup.html#a672e250e6c5dcc759b76efb620d99fbe", null ],
+    [ "setup.python_requires", "dd/dc4/namespacesetup.html#aa601a5da5d7cdd443389bdeea09be645", null ],
+    [ "setup.url", "dd/dc4/namespacesetup.html#afcd5a3e84f2adb7f83fa6c99911f31e4", null ],
+    [ "setup.VERSION", "dd/dc4/namespacesetup.html#a5eb009c6ad9e10533deb1e5b1b270692", null ],
+    [ "setup.version", "dd/dc4/namespacesetup.html#a4c7a521b8f1a0769c09bfa4a1fca7dab", null ],
+    [ "setup.zip_safe", "dd/dc4/namespacesetup.html#a270a33302dcfe1b60738df9ebbfb2103", null ]
+];

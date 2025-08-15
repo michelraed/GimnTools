@@ -1,0 +1,27 @@
+var searchData=
+[
+  ['para_20desenvolvimento_0',['Instalação para Desenvolvimento',['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md51',1,'']]],
+  ['phantoms_1',['4.4. &lt;span class=&quot;tt&quot;&gt;ImaGIMN.phantoms&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md25',1,'']]],
+  ['phantoms_20derenzzo_20derenzophantomslice_2',['&lt;span class=&quot;tt&quot;&gt;ImaGIMN.phantoms.derenzzo.DerenzoPhantomSlice&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md32',1,'']]],
+  ['pip_3',['Instalação via pip',['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md50',1,'']]],
+  ['planejado_4',['Planejado',['../d1/d5b/md__c_h_a_n_g_e_l_o_g.html#autotoc_md8',1,'']]],
+  ['ploter_5',['ploter',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md24',1,'4.3.4. <span class="tt">ImaGIMN.processing.ploter</span>'],['../d5/dd9/md_documentacao__gimntools.html#autotoc_md37',1,'<span class="tt">ImaGIMN.processing.ploter.ploter</span>']]],
+  ['ploter_20ploter_6',['&lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.ploter.ploter&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md37',1,'']]],
+  ['práticos_7',['5. Exemplos de Uso Práticos',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md26',1,'']]],
+  ['principais_8',['Principais',['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md61',1,'']]],
+  ['principais_20funcionalidades_9',['Principais Funcionalidades',['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md42',1,'✨ Principais Funcionalidades'],['../d5/dd9/md_documentacao__gimntools.html#autotoc_md12',1,'Principais Funcionalidades']]],
+  ['processamento_20de_20imagens_10',['🖼️ Processamento de Imagens',['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md45',1,'']]],
+  ['processamento_20de_20sinogramas_11',['📊 Processamento de Sinogramas',['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md44',1,'']]],
+  ['processing_12',['4.3. &lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md20',1,'']]],
+  ['processing_20filters_13',['4.3.1. &lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.filters&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md21',1,'']]],
+  ['processing_20interpolators_14',['4.3.2. &lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.interpolators&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md22',1,'']]],
+  ['processing_20interpolators_20reconstruction_15',['&lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.interpolators.reconstruction&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md33',1,'']]],
+  ['processing_20ploter_16',['4.3.4. &lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.ploter&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md24',1,'']]],
+  ['processing_20ploter_20ploter_17',['&lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.ploter.ploter&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md37',1,'']]],
+  ['processing_20tools_18',['4.3.3. &lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.tools&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md23',1,'']]],
+  ['processing_20tools_20kernels_19',['&lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.tools.kernels&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md34',1,'']]],
+  ['processing_20tools_20math_20',['&lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.tools.math&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md35',1,'']]],
+  ['processing_20tools_20utils_21',['&lt;span class=&quot;tt&quot;&gt;ImaGIMN.processing.tools.utils&lt;/span&gt;',['../d5/dd9/md_documentacao__gimntools.html#autotoc_md36',1,'']]],
+  ['projeto_22',['Projeto',['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md59',1,'📁 Estrutura do Projeto'],['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md71',1,'📊 Status do Projeto'],['../d1/d5b/md__c_h_a_n_g_e_l_o_g.html#autotoc_md5',1,'Configuração do Projeto']]],
+  ['py_23',['py',['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md55',1,'1. Script de Build (<span class="tt">scripts/build.py</span>)'],['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md56',1,'2. Script de Instalação (<span class="tt">scripts/install.py</span>)'],['../d3/dcc/md__r_e_a_d_m_e.html#autotoc_md57',1,'3. Script de Deploy (<span class="tt">scripts/deploy.py</span>)']]]
+];
