@@ -17,7 +17,7 @@ def read_file(filename):
         return ""
 
 # Informações da versão
-VERSION = "1.0.1"
+VERSION = "1.0.0.0"
 
 # Dependências principais
 INSTALL_REQUIRES = [

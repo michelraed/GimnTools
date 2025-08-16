@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: GimnTools
-Version: 1.0.1
+Version: 1.0.0.0
 Summary: Biblioteca Python para processamento de imagens médicas e reconstrução tomográfica
 Home-page: https://github.com/michelraed/GimnTools.git
 Author: Desenvolvedor GimnTools
@@ -54,15 +54,15 @@ Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "dev"
 Requires-Dist: sphinx-autodoc-typehints>=1.12.0; extra == "dev"
 Requires-Dist: myst-parser>=0.15.0; extra == "dev"
 Provides-Extra: all
-Requires-Dist: mypy>=0.910; extra == "all"
-Requires-Dist: myst-parser>=0.15.0; extra == "all"
-Requires-Dist: pytest-cov>=2.10.0; extra == "all"
-Requires-Dist: black>=21.0.0; extra == "all"
-Requires-Dist: flake8>=3.8.0; extra == "all"
+Requires-Dist: pytest>=6.0.0; extra == "all"
 Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "all"
 Requires-Dist: sphinx-autodoc-typehints>=1.12.0; extra == "all"
+Requires-Dist: pytest-cov>=2.10.0; extra == "all"
+Requires-Dist: black>=21.0.0; extra == "all"
 Requires-Dist: sphinx>=4.0.0; extra == "all"
-Requires-Dist: pytest>=6.0.0; extra == "all"
+Requires-Dist: myst-parser>=0.15.0; extra == "all"
+Requires-Dist: flake8>=3.8.0; extra == "all"
+Requires-Dist: mypy>=0.910; extra == "all"
 Dynamic: author
 Dynamic: author-email
 Dynamic: classifier
