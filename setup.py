@@ -17,7 +17,7 @@ def read_file(filename):
         return ""
 
 # Informações da versão
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 # Dependências principais
 INSTALL_REQUIRES = [
@@ -34,6 +34,9 @@ INSTALL_REQUIRES = [
     "pandas>=1.3.0",
     "awkward>=1.2.0",
     "uproot>=5.0.0",
+    'jupyter>=1.0.0',
+    'ipywidgets>=7.6.0',
+    'plotly>=5.0.0',
 ]
 
 # Dependências opcionais para desenvolvimento
@@ -46,18 +49,11 @@ EXTRAS_REQUIRE = {
         'black>=21.0.0',
         'flake8>=3.8.0',
         'mypy>=0.910',
-    ],
-    'jupyter': [
-        'jupyter>=1.0.0',
-        'ipywidgets>=7.6.0',
-        'plotly>=5.0.0',
-    ],
-    'docs': [
         'sphinx>=4.0.0',
         'sphinx-rtd-theme>=0.5.0',
         'sphinx-autodoc-typehints>=1.12.0',
         'myst-parser>=0.15.0',
-    ]
+    ],
 }
 
 # Todas as dependências extras

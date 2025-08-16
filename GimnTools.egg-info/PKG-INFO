@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: GimnTools
-Version: 1.0.0
+Version: 1.0.1
 Summary: Biblioteca Python para processamento de imagens médicas e reconstrução tomográfica
 Home-page: https://github.com/michelraed/GimnTools.git
 Author: Desenvolvedor GimnTools
@@ -38,6 +38,9 @@ Requires-Dist: tqdm>=4.60.0
 Requires-Dist: pandas>=1.3.0
 Requires-Dist: awkward>=1.2.0
 Requires-Dist: uproot>=5.0.0
+Requires-Dist: jupyter>=1.0.0
+Requires-Dist: ipywidgets>=7.6.0
+Requires-Dist: plotly>=5.0.0
 Provides-Extra: dev
 Requires-Dist: pytest>=6.0.0; extra == "dev"
 Requires-Dist: pytest-cov>=2.10.0; extra == "dev"
@@ -46,27 +49,19 @@ Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "dev"
 Requires-Dist: black>=21.0.0; extra == "dev"
 Requires-Dist: flake8>=3.8.0; extra == "dev"
 Requires-Dist: mypy>=0.910; extra == "dev"
-Provides-Extra: jupyter
-Requires-Dist: jupyter>=1.0.0; extra == "jupyter"
-Requires-Dist: ipywidgets>=7.6.0; extra == "jupyter"
-Requires-Dist: plotly>=5.0.0; extra == "jupyter"
-Provides-Extra: docs
-Requires-Dist: sphinx>=4.0.0; extra == "docs"
-Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "docs"
-Requires-Dist: sphinx-autodoc-typehints>=1.12.0; extra == "docs"
-Requires-Dist: myst-parser>=0.15.0; extra == "docs"
+Requires-Dist: sphinx>=4.0.0; extra == "dev"
+Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "dev"
+Requires-Dist: sphinx-autodoc-typehints>=1.12.0; extra == "dev"
+Requires-Dist: myst-parser>=0.15.0; extra == "dev"
 Provides-Extra: all
-Requires-Dist: sphinx>=4.0.0; extra == "all"
 Requires-Dist: mypy>=0.910; extra == "all"
 Requires-Dist: myst-parser>=0.15.0; extra == "all"
 Requires-Dist: pytest-cov>=2.10.0; extra == "all"
-Requires-Dist: flake8>=3.8.0; extra == "all"
-Requires-Dist: jupyter>=1.0.0; extra == "all"
-Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "all"
-Requires-Dist: plotly>=5.0.0; extra == "all"
-Requires-Dist: ipywidgets>=7.6.0; extra == "all"
 Requires-Dist: black>=21.0.0; extra == "all"
+Requires-Dist: flake8>=3.8.0; extra == "all"
+Requires-Dist: sphinx-rtd-theme>=0.5.0; extra == "all"
 Requires-Dist: sphinx-autodoc-typehints>=1.12.0; extra == "all"
+Requires-Dist: sphinx>=4.0.0; extra == "all"
 Requires-Dist: pytest>=6.0.0; extra == "all"
 Dynamic: author
 Dynamic: author-email
@@ -161,19 +156,8 @@ A biblioteca inclui scripts automatizados para facilitar o desenvolvimento:
 
 ### Scripts Disponíveis
 
-#### 1. Script de Build (`scripts/build.py`)
-```bash
-# Build completo
-python scripts/build.py --all
 
-# Build apenas wheel
-python scripts/build.py --build-type wheel
-
-# Limpeza + build + testes
-python scripts/build.py --clean --check --install --test
-```
-
-#### 2. Script de Instalação (`scripts/install.py`)
+#### Script de Instalação (`scripts/install.py`)
 ```bash
 # Instalação básica
 python scripts/install.py
@@ -185,35 +169,24 @@ python scripts/install.py --mode development --jupyter --docs
 python scripts/install.py --venv
 ```
 
-#### 3. Script de Deploy (`scripts/deploy.py`)
-```bash
-# Deploy para PyPI de teste
-python scripts/deploy.py --repository testpypi
-
-# Deploy para PyPI oficial (requer confirmação)
-python scripts/deploy.py --repository pypi --version 1.0.1
-
-# Apenas build (sem upload)
-python scripts/deploy.py --build-only
-```
 
 ### Usando Makefile (Linux/macOS)
 
 ```bash
+# Instalar para usuario	
+make install
+
 # Instalar para desenvolvimento
 make install-dev
 
 # Executar testes
 make test
 
-# Formatar código
-make format
-
 # Build completo
 make build
 
 # Deploy para PyPI de teste
-make upload-test
+make upload
 
 # Limpar arquivos temporários
 make clean

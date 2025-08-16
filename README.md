@@ -75,19 +75,8 @@ A biblioteca inclui scripts automatizados para facilitar o desenvolvimento:
 
 ### Scripts Disponíveis
 
-#### 1. Script de Build (`scripts/build.py`)
-```bash
-# Build completo
-python scripts/build.py --all
 
-# Build apenas wheel
-python scripts/build.py --build-type wheel
-
-# Limpeza + build + testes
-python scripts/build.py --clean --check --install --test
-```
-
-#### 2. Script de Instalação (`scripts/install.py`)
+#### Script de Instalação (`scripts/install.py`)
 ```bash
 # Instalação básica
 python scripts/install.py
@@ -99,35 +88,24 @@ python scripts/install.py --mode development --jupyter --docs
 python scripts/install.py --venv
 ```
 
-#### 3. Script de Deploy (`scripts/deploy.py`)
-```bash
-# Deploy para PyPI de teste
-python scripts/deploy.py --repository testpypi
-
-# Deploy para PyPI oficial (requer confirmação)
-python scripts/deploy.py --repository pypi --version 1.0.1
-
-# Apenas build (sem upload)
-python scripts/deploy.py --build-only
-```
 
 ### Usando Makefile (Linux/macOS)
 
 ```bash
+# Instalar para usuario	
+make install
+
 # Instalar para desenvolvimento
 make install-dev
 
 # Executar testes
 make test
 
-# Formatar código
-make format
-
 # Build completo
 make build
 
 # Deploy para PyPI de teste
-make upload-test
+make upload
 
 # Limpar arquivos temporários
 make clean

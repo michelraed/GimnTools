@@ -51,6 +51,4 @@ GimnTools/tests/test_reconstruction.py
 GimnTools/tests/tests.py
 examples/Exemplos.ipynb
 examples/basic_usage.py
-scripts/build.py
-scripts/deploy.py
 scripts/install.py

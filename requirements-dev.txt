@@ -34,7 +34,7 @@ seaborn>=0.11.0
 # Profiling e debugging
 line_profiler>=3.3.0
 memory_profiler>=0.58.0
-pdb++>=0.10.0
+
 
 # Controle de versão e automação
 pre-commit>=2.13.0
