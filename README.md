@@ -491,6 +491,9 @@ plt.savefig(path + "line_integral_reconstructor_test.png", bbox_inches='tight',
 print(f"✅ Line integral reconstructor test completed successfully. Images saved to {path}line_integral_reconstructor_test.png")
 ```
 
+![Resultado da Reconstrução com o reconstrutor de integral de linha para o fantoma de Derenzo.](https://raw.githubusercontent.com/michelraed/GimnTools/main/output/derenzo_phantom_test.png)
+
+
 ### Exemplo 3: Reconstrutor System Matrix
 
 ```python
