@@ -644,12 +644,12 @@ Este projeto está licenciado sob a licença Apache 2.0. Veja o arquivo [LICENSE
 
 - **Issues**: [GitHub Issues](https://github.com/usuario/GimnTools/issues)
 - **Discussões**: [GitHub Discussions](https://github.com/usuario/GimnTools/discussions)
-- **Email**: contato@gimntools.com
+- **Email**: michelraed@gmail.com
 
 
 
 
-**GimnTools** - Ferramentas avançadas para imagens médicas em Python.
+**GimnTools** - Ferramentas para reconstrução e processamento de imagens médicas em Python.
 
 
 
