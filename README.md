@@ -642,8 +642,8 @@ Este projeto está licenciado sob a licença Apache 2.0. Veja o arquivo [LICENSE
 
 ## 🆘 Suporte
 
-- **Issues**: [GitHub Issues]([https://github.com/usuario/GimnTools/issues](https://github.com/michelraed/GimnTools/issues/2))
-- **Discussões**: [GitHub Discussions]([https://github.com/usuario/GimnTools/discussions](https://github.com/michelraed/GimnTools/discussions/1))
+- **Issues**: [https://github.com/usuario/GimnTools/issues](https://github.com/michelraed/GimnTools/issues/2)
+- **Discussões**:[https://github.com/usuario/GimnTools/discussions](https://github.com/michelraed/GimnTools/discussions/1)
 - **Email**: michelraed@gmail.com
 
 
