@@ -271,6 +271,9 @@ print(f"Random image saved to {filename}")
 
 
 ```
+A seguir a imagem obtida do processo de geração de imagens randomicas para teste : 
+
+![Imagem aleatória gerada para fins de teste](https://github.com/michelraed/GimnTools/blob/main/output/random_image_test.png)
 
 ### Exemplo 2: Teste Shepp-Logan Phantom
 
@@ -302,6 +305,9 @@ plt.show()
 print(f"Shepp-Logan phantom saved to {filename}")
 
 ```
+A seguir o fantoma de Shepp-Logan obtido, é utilizada a biblioteca Scipy para esta finalidade.
+
+![Imagem fantoma de Shepp-Logan](https://github.com/michelraed/GimnTools/blob/main/output/shepp_logan_phantom_test.png)
 
 ### Exemplo 3: Gerar Fantoma de Derenzo
 
@@ -345,8 +351,12 @@ path = "./output/"
 Path(path).mkdir(parents=True, exist_ok=True)
 plt.savefig(path + "derenzo_phantom_test.png", bbox_inches='tight', pad_inches=0.1)
 ```
+A seguir a imagem do fantoma de Derenzo gerado nesta função:
 
-### Exemplo 3: Reconstrução usando reconstrutor com projetor baseado na rotação da imagem
+![Imagem Fantoma de derenzo](https://github.com/michelraed/GimnTools/blob/main/output/derenzo_phantom_test.png)
+
+
+## Exemplo 3: Reconstrução usando reconstrutor com projetor baseado na rotação da imagem
 
 ```python
 
@@ -404,6 +414,14 @@ print(f"✅ Rotation reconstructor test completed successfully. Images saved to 
         
 
 ```
+
+
+
+Os dados reconstruídos devem seguir o seguinte padrão : 
+
+![Resultado da Reconstrução com o reconstrutor baseado na rotação da imagem para o fantoma de Derenzo.](https://github.com/michelraed/GimnTools/blob/main/output/rotation_reconstructor_test.png)
+
+
 
 ### Exemplo 3: Reconstrutor baseado na integral da linha de projeção
 
@@ -491,7 +509,9 @@ plt.savefig(path + "line_integral_reconstructor_test.png", bbox_inches='tight',
 print(f"✅ Line integral reconstructor test completed successfully. Images saved to {path}line_integral_reconstructor_test.png")
 ```
 
-![Resultado da Reconstrução com o reconstrutor de integral de linha para o fantoma de Derenzo.](https://raw.githubusercontent.com/michelraed/GimnTools/main/output/derenzo_phantom_test.png)
+Os dados reconstruídos devem seguir o seguinte padrão : 
+
+![Resultado da Reconstrução com o reconstrutor de integral de linha para o fantoma de Derenzo.](https://github.com/michelraed/GimnTools/blob/main/output/line_integral_reconstructor_test.png)
 
 
 ### Exemplo 3: Reconstrutor System Matrix
@@ -545,6 +565,10 @@ plt.savefig(path + "system_matrix_reconstructor_test.png", bbox_inches='tight', 
 print(f"✅ System matrix reconstructor test completed successfully. Images saved to {path}system_matrix_reconstructor_test.png")
 
 ```
+Os dados reconstruídos devem seguir o seguinte padrão : 
+
+![Resultado da Reconstrução com o reconstrutor baseado na matriz do sistema para o fantoma de Derenzo.](https://github.com/michelraed/GimnTools/blob/main/output/system_matrix_reconstructor_test.png)
+
 
 
 ##  API Reference
