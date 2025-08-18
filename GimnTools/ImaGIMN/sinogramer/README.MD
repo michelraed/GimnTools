@@ -1,7 +1,5 @@
-Aqui está o README reorganizado de forma lógica para uso acadêmico, mantendo todo o conteúdo original:
 
-```markdown
-# Sistema de Tomografia por Emissão de Pósitrons (PET)
+# Classes implementadas para a geração de Sinogramas
 
 ## Componentes Principais
 
@@ -245,4 +243,4 @@ rsectors = {
                |←→ Raio = 25 mm
                ● Centro de Rotação
 ```
-```
+
