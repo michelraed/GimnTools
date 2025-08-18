@@ -630,11 +630,6 @@ Contribuições são bem-vindas! Para contribuir:
 9. **Push**: `git push origin feature/nova-funcionalidade`
 10. **Abra um Pull Request**
 
-### Diretrizes de Contribuição
-- Siga os padrões de código (black, flake8)
-- Adicione testes para novas funcionalidades
-- Atualize a documentação quando necessário
-- Use mensagens de commit descritivas
 
 ## 📄 Licença
 
