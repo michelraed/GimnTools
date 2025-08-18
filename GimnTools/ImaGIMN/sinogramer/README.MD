@@ -192,13 +192,15 @@ rsectors = {
 }
 ```
 
-### 3. Configuração Física do Detector (`detector_config`)
+### 3. Exemplos dos arquivos de configuração utilizados presentes em `detector_config`
+
+Os dados a seguir são apenas um exemplo, devendo ser configurados, segundo arquivo presente em "conf.py"
 
 #### Parâmetros Geométricos Principais
 | Parâmetro | Valor | Descrição |
 |-----------|-------|-----------|
 | `pla_thickness` | 2.0 mm | Espessura da camada PLA |
-| `radius` | 25 mm | Raio do bore do scanner |
+| `radius` | 35 mm | Raio do bore do scanner |
 | `crystal_size` | [20, 26.88, 26.88] mm | Dimensões do cristal (X,Y,Z) |
 | `sipm_pitch` | [3.36, 3.36] mm | Espaçamento entre pixels SiPM (X,Y) |
 | `sipm_pixel_n` | [8, 8] | Matriz de pixels SiPM 8×8 |
