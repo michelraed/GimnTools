@@ -7,7 +7,7 @@
 
 ##  Introdução e Visão Geral
 
-A GimnTools é uma biblioteca Python de código aberto projetada para o processamento de imagens médicas e reconstrução tomográfica. Ela oferece um conjunto de ferramentas robustas para manipulação de imagens, geração de sinogramas, aplicação de filtros e implementação de algoritmos de reconstrução. O objetivo desta documentação é fornecer um guia completo e exaustivo para desenvolvedores e pesquisadores que desejam utilizar a GimnTools em seus projetos.
+A GimnTools é uma biblioteca Python de código aberto projetada para o processamento de imagens médicas e reconstrução tomográfica. Ela oferece um conjunto de ferramentas para manipulação de imagens, geração de sinogramas, aplicação de filtros e implementação de algoritmos de reconstrução. O objetivo desta documentação é fornecer um guia completo para desenvolvedores e pesquisadores que desejam utilizar a GimnTools em seus projetos.
 
 ## ✨ Principais Funcionalidades
 
