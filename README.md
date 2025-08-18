@@ -69,7 +69,7 @@ python scripts/install.py --mode development --jupyter
 make install-dev
 ```
 
-## 🛠️ Scripts de Build e Deploy
+## 🛠️ Scripts de Instalação
 
 A biblioteca inclui scripts automatizados para facilitar o desenvolvimento:
 
