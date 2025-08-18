@@ -230,19 +230,4 @@ Os dados a seguir são apenas um exemplo, devendo ser configurados, segundo arqu
    - Rotação completa de 360°
    - Processamento como monolítico apesar de cristal segmentado
 
-### Diagrama Conceitual
-```
-       Sistema de Tomografia
-       ---------------------
-          Z (eixo de rotação)
-               ↑
-               |
-       +-------|-------+
-       |       |       |
-       |  D1   |  D2   |  ← Detectores (180° opostos)
-       | (180°)| (0°)  |
-       +-------|-------+
-               |←→ Raio = 25 mm
-               ● Centro de Rotação
-```
 
