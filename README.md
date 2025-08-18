@@ -176,21 +176,7 @@ GimnTools/
 - **flake8**: Linting
 - **mypy**: Verificação de tipos
 
-## 📚 Documentação
-
-A documentação completa está disponível em:
-- **Online**: [https://gimntools.readthedocs.io/](https://gimntools.readthedocs.io/)
-- **Local**: Execute `make docs` para gerar localmente
-
-### Tópicos da Documentação
-- **Guia do Usuário**: Introdução e conceitos básicos
-- **API Reference**: Documentação detalhada de todas as funções
-- **Tutoriais**: Exemplos passo a passo
-- **Guia do Desenvolvedor**: Como contribuir para o projeto
-
-
-
-## Documentação Detalhada dos Módulos
+## Documentação  dos Módulos
 
 ### 1. `ImaGIMN.IO`
 
