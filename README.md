@@ -1,6 +1,6 @@
 # GimnTools
 
-**Research-oriented preclinical PET reconstruction — PETSYS and GATE**  
+**Research-oriented small object PET reconstruction — PETSYS and GATE**  
 **Version:** 2.0.0 · **Python:** 3.10+ · **License:** MIT · **Author:** Michel David Raed
 
 GimnTools is an open-source Python toolkit for creating sinograms from
