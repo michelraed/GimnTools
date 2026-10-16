@@ -1,0 +1,5 @@
+{
+  "_comment": "rsectorID -> detector-name mapping. For GATE the keys are rsectorID1/rsectorID2 read from the ROOT file. The values must match the names in detectors_angles.json.",
+  "0": "detector-1",
+  "1": "detector-2"
+}

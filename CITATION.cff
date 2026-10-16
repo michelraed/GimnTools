@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If GimnToolsV2 contributes to research or a scientific publication, please cite this software and specify the version used."
+type: software
+title: "GimnToolsV2: Tomographic Reconstruction Toolkit for Preclinical PET"
+version: 0.4.3
+date-released: 2026-10-15
+license: MIT
+authors:
+  - family-names: Raed
+    given-names: Michel David
+    email: michelraed@gmail.com
+keywords:
+  - preclinical PET
+  - tomography
+  - Siddon
+  - maximum-likelihood expectation maximization
+  - ordered-subsets expectation maximization
+  - filtered backprojection
+  - PETSYS
+  - GATE
+abstract: >-
+  Research Python toolkit for PETSYS and GATE sinogram construction,
+  calibrated rotating-detector PET geometry, and slice-wise reconstruction
+  by filtered backprojection, MLEM and OSEM.

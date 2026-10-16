@@ -1,0 +1,7 @@
+{
+  "_warning": "TEMPLATE ONLY: zero offsets are NOT a measured calibration. Determine geometry with a dedicated phantom before quantitative use.",
+  "dx_cor_mm": 0.0,
+  "dy_cor_mm": 0.0,
+  "phi_offset_deg": 0.0,
+  "b_const_mm": 0.0
+}

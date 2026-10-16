@@ -1,0 +1,29 @@
+{
+  "_comment": "Detector configuration for PETSYS data. Adapt the values to your hardware.",
+  "data_from": "PETSYS",
+  "pla_thickness": 2.0,
+  "radius": 35,
+  "crystal_size": [
+    20,
+    26.88,
+    26.88
+  ],
+  "sipm_pitch": [
+    3.36,
+    3.36
+  ],
+  "sipm_pixel_n": [
+    8,
+    8
+  ],
+  "crystal_type": "segmented",
+  "rotation_angles": 12,
+  "arround": 180,
+  "detNum": 2,
+  "Half_FOV": 35,
+  "sino_range_mm": 26.88,
+  "rotate_along": "y",
+  "e_min": 450.0,
+  "e_max": 650.0,
+  "det_z_rotation": 90.0
+}

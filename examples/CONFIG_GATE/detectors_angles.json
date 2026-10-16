@@ -1,0 +1,5 @@
+{
+  "_comment": "Initial angles (degrees) of each detector around the rotation axis. The names ('detector-1', etc.) must match the values in rsectors.json.",
+  "detector-1": 0,
+  "detector-2": -180
+}

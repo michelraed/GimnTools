@@ -1,0 +1,27 @@
+{
+  "_comment": "Detector configuration for GATE data. process_as selects the branch: 'CrystalID' (recommended for segmented crystals), 'GateGlobalPositions' (monolithic crystals with global positions), 'GeneralGlobalPosition' (z-axis variant), or 'PaulGlobalPosition'.",
+  "data_from": "GATE",
+  "process_as": "GateGlobalPositions",
+  "pla_thickness": 2.0,
+  "radius": 53,
+  "crystal_size": [
+    20,
+    26.88,
+    26.88
+  ],
+  "sipm_pitch": [
+    3.36,
+    3.36
+  ],
+  "sipm_pixel_n": [
+    8,
+    8
+  ],
+  "crystal_type": "segmented",
+  "rotation_angles": 2,
+  "arround": 30,
+  "detNum": 12,
+  "Half_FOV": 35,
+  "sino_range_mm": 26.88,
+  "rotate_along": "y"
+}

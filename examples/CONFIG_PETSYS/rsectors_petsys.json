@@ -1,0 +1,5 @@
+{
+  "_comment": "chipID -> detector-name mapping. For PETSYS the keys are chipID_1/chipID_2 read from the ROOT file. Keys MUST be strings in JSON; the loader converts them to int.",
+  "0": "detector-1",
+  "15": "detector-2"
+}

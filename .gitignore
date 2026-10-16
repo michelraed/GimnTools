@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# User data (local SQLite profile database)
+data/
+gimntools.db
+
+# Reconstruction outputs
+*.npz
+*.mhd
+*.raw
+*.nrrd
+recon_*/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+.~lock*#

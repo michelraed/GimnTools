@@ -1,3 +1,45 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "GimnToolsV2"
+version = "0.4.3"
+authors = [{ name = "Michel David Raed", email = "michelraed@gmail.com" }]
+description = "Research toolkit for preclinical PET sinogram generation and tomographic reconstruction (PETSYS/GATE)"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE"]
+keywords = ["PET", "tomography", "sinogram", "FBP", "MLEM", "OSEM", "Siddon", "GATE", "PETSYS", "nuclear medicine"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+  "numpy>=1.21",
+  "scipy>=1.7",
+  "matplotlib>=3.4",
+  "pandas>=1.3",
+  "numba>=0.56",
+  "uproot>=5.0",
+  "SimpleITK>=2.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0"]
+
+[project.scripts]
+reconstruct_petsys = "Gimntools.GimnRec.cli.reconstruct_petsys:main"
+reconstruct_gate = "Gimntools.GimnRec.cli.reconstruct_gate:main"
+gimntools_ui = "Gimntools.GimnRec.ui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,678 +1,356 @@
-# GimnTools
+# GimnToolsV2
 
-[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://python.org)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://gimntools.readthedocs.io/)
-[![PyPI Version](https://img.shields.io/pypi/v/gimntools.svg)](https://pypi.org/project/gimntools/)
+**Research-oriented preclinical PET reconstruction — PETSYS and GATE**  
+**Version:** 0.4.3 · **Python:** 3.10+ · **License:** MIT · **Author:** Michel David Raed
 
-##  Introdução e Visão Geral
+GimnToolsV2 is an open-source Python toolkit for creating sinograms from
+coincidence events and reconstructing **slice-wise 2-D PET images** from
+rotating-detector PET acquisitions. It supports experimental **PETSYS** data
+and **GATE** Monte Carlo simulation ROOT files, with a Python API, terminal
+commands and a Tkinter interface.
 
-A GimnTools é uma biblioteca Python de código aberto projetada para o processamento de imagens médicas e reconstrução tomográfica. Ela oferece um conjunto de ferramentas para manipulação de imagens, geração de sinogramas, aplicação de filtros e implementação de algoritmos de reconstrução. O objetivo desta documentação é fornecer um guia completo para desenvolvedores e pesquisadores que desejam utilizar a GimnTools em seus projetos.
+> **Scientific status:** Research software. The included numerical and GUI
+> regression tests do not prove scanner-specific accuracy, quantitative
+> activity calibration, NEMA compliance or fitness for clinical diagnosis.
+> This is a slice-wise reconstruction framework, **not** a validated full-3-D,
+> oblique-LOR or time-of-flight PET reconstruction system.
 
-## ✨ Principais Funcionalidades
+## Features
 
-### 🔬 Reconstrução Tomográfica
-- **Algoritmos de Reconstrução**: MLEM, OSEM, FBP (Filtered Back-Projection)
-- **Reconstrução por Integrais de Linha**: Implementação otimizada com Numba
-- **Matriz de Sistema**: Suporte para reconstrução baseada em matriz de sistema
-- **Correções**: Atenuação, dispersão e normalização
+- PETSYS coincidence-to-LOR processing and GATE ROOT event processing.
+- Sinogram creation with configurable detector geometry, angle maps, crystal
+  dimensions, rotation axes, energy windows and discretization.
+- Siddon ray-tracing projector and matched backprojector.
+- **FBP**, **MLEM** and **OSEM**, selectable individually or together.
+- Additive nonnegative background model for PETSYS MLEM/OSEM; measured prompt
+  count bins remain unchanged by interpolation and angular smoothing.
+- Geometric centre-of-rotation (COR) / encoder-angle correction in projector
+  coordinates, with support for a joint PETSYS calibration JSON.
+- Optional radial PSF model, image-space Gaussian smoothing, geometric
+  sensitivity normalization and configurable image matrix / voxel size.
+- MHD and NRRD export through SimpleITK; NPZ arrays and JSON metadata.
+- Graphical workflow including sinogram display, reconstruction, image views,
+  image profiles and spatial-resolution analysis.
 
-### 📊 Processamento de Sinogramas
-- **Geração de Sinogramas**: Suporte para cristais monolíticos e segmentados
-- **Conversão de Coordenadas**: Transformação entre espaços de cristais e pixels
-- **Configuração de Sistema**: Gerenciamento flexível de geometrias de detectores
+## Requirements
 
-### 🖼️ Processamento de Imagens
-- **Filtros Espaciais**: Convolução, filtros de vizinhança otimizados
-- **Filtros de Frequência**: Transformada de Fourier e filtragem espectral
-- **Filtros Morfológicos**: Operações de abertura, fechamento, erosão e dilatação
-- **Interpolação**: Métodos de reconstrução e reamostragem
+Python **3.10 or newer**; supported scientific dependencies are installed by
+`pip`: NumPy, SciPy, Pandas, Matplotlib, Numba, uproot and SimpleITK. A C/C++
+compiler is usually unnecessary when compatible prebuilt dependency wheels
+exist. Initial calls to Numba-accelerated reconstruction can take longer
+because kernels are JIT compiled.
 
-### 🎯 Fantomas e Simulação
-- **Fantoma de Derenzo**: Geração paramétrica de fantomas de teste
-- **Geometrias Customizadas**: Criação de formas geométricas diversas
-- **Fantomas Aleatórios**: Geração procedural para testes variados
-
-### 📁 I/O de Imagens Médicas
-- **DICOM**: Leitura e escrita usando SimpleITK e ITK
-- **Normalização**: Conversão entre tipos de dados e escalas
-- **Metadados**: Preservação de informações de espaçamento, origem e orientação
-
-## 🚀 Instalação Rápida
-
-### Requisitos
-- Python 3.8 ou superior
-- Sistema operacional: Windows, macOS ou Linux
-
-### Instalação via pip
-```bash
-pip install GimnTools
-```
-
-### Instalação para Desenvolvimento
-```bash
-git clone https://github.com/usuario/GimnTools.git
-cd GimnTools
-pip install -e ".[dev]"
-```
-
-### Usando Scripts de Instalação
-```bash
-# Clone o repositório
-git clone https://github.com/usuario/GimnTools.git
-cd GimnTools
-
-# Execute o script de instalação
-python scripts/install.py --mode development --jupyter
-
-# Ou use o Makefile (Linux/macOS)
-make install-dev
-```
-
-## 🛠️ Scripts de Instalação
-
-A biblioteca inclui scripts automatizados para facilitar o desenvolvimento:
-
-### Scripts Disponíveis
-
-
-#### Script de Instalação (`scripts/install.py`)
-```bash
-# Instalação básica
-python scripts/install.py
-
-# Instalação para desenvolvimento
-python scripts/install.py --mode development --jupyter --docs
-
-# Criar ambiente virtual
-python scripts/install.py --venv
-```
-
-
-### Usando Makefile (Linux/macOS)
+For the GUI, Tkinter must also be present on the host system. On Ubuntu/Debian:
 
 ```bash
-# Instalar para usuario	
-make install
-
-# Instalar para desenvolvimento
-make install-dev
-
-# Executar testes
-make test
-
-# Build completo
-make build
-
-# Deploy para PyPI de teste
-make upload
-
-# Limpar arquivos temporários
-make clean
+sudo apt update
+sudo apt install python3-tk
 ```
 
-## 📁 Estrutura do Projeto
+On Windows and macOS, Tkinter is typically bundled with standard CPython
+installers. On headless Linux servers use the CLI; do not run the GUI.
 
-```
-GimnTools/
-├── GimnTools/               # Pacote principal
-│   ├── __init__.py
-│   └── ImaGIMN/            # Módulo principal
-│       ├── image.py         # Classe base para imagens
-│       ├── IO/             # Entrada e saída
-│       │   ├── MIIO.py     # I/O de imagens médicas
-│       │   └── GimnIO.py   # I/O geral
-│       ├── sinogramer/     # Geração de sinogramas
-│       │   ├── sinogramer.py
-│       │   ├── conf.py
-│       │   └── systemSpace.py
-│       ├── gimnRec/        # Reconstrução
-│       │   ├── reconstructors/
-│       │   ├── backprojectors.py
-│       │   ├── projectors.py
-│       │   └── corrections.py
-│       ├── processing/     # Processamento
-│       │   ├── filters/    # Filtros
-│       │   ├── interpolators/
-│       │   ├── tools/      # Ferramentas matemáticas
-│       │   └── ploter/     # Visualização
-│       └── phantoms/       # Fantomas
-│           ├── derenzzo.py
-│           ├── random.py
-│           └── geometries/
-├── scripts/                # Scripts de automação
-│   ├── build.py           # Script de build
-│   ├── install.py         # Script de instalação
-│   └── deploy.py          # Script de deploy
-├── docs/                  # Documentação
-├── tests/                 # Testes
-├── examples/              # Exemplos
-├── setup.py              # Configuração setuptools
-├── pyproject.toml        # Configuração moderna
-├── requirements.txt      # Dependências
-├── requirements-dev.txt  # Dependências dev
-├── Makefile             # Automação (Unix)
-└── README.md            # Este arquivo
+## Install
+
+**From PyPI, after publication** (the uploaded wheel is already installable
+locally even if the PyPI project does not exist yet):
+
+```bash
+python -m pip install GimnToolsV2==0.4.3
 ```
 
-## 🔧 Dependências
+**From the project directory** (editable development checkout):
 
-### Principais
-- **numpy** (≥1.20.0): Computação numérica
-- **scipy** (≥1.7.0): Algoritmos científicos
-- **matplotlib** (≥3.3.0): Visualização
-- **numba** (≥0.54.0): Compilação JIT para performance
-- **SimpleITK** (≥2.1.0): Processamento de imagens médicas
-- **itk** (≥5.2.0): Toolkit de imagens
-- **Pillow** (≥8.0.0): Manipulação de imagens
-- **scikit-image** (≥0.18.0): Processamento de imagens
-- **h5py** (≥3.1.0): Armazenamento HDF5
-- **tqdm** (≥4.60.0): Barras de progresso
+```bash
+python -m pip install -e .
+```
 
-### Dependências de Desenvolvimento
-- **pytest**: Framework de testes
-- **sphinx**: Geração de documentação
-- **black**: Formatação de código
-- **flake8**: Linting
-- **mypy**: Verificação de tipos
+**From the wheel** distributed in this release:
 
-## Documentação  dos Módulos
+```bash
+python -m pip install ./dist/gimntoolsv2-0.4.3-py3-none-any.whl
+```
 
-### 1. `ImaGIMN.IO`
+We recommend an isolated environment to avoid incompatible scientific
+library versions:
 
-Responsável pelas operações de entrada e saída.
+```bash
+# Linux / macOS
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
 
-*   **`MIIO.py`**: Classe de alto nível para manipulação de I/O de imagens médicas, especialmente DICOM. Usa `SimpleITK` e `ITK` como backend. Fornece funcionalidades essenciais como leitura, escrita e normalização de imagens.
-*   **`GimnIO.py`**: Utilitários de I/O de baixo nível, como criação de pastas e salvamento de arquivos JSON.
+# Windows PowerShell (run from the repository root)
+# py -3 -m venv .venv
+# .\.venv\Scripts\Activate.ps1
+# python -m pip install --upgrade pip
+# python -m pip install -e .
+```
 
-### 2. `ImaGIMN.gimnRec`
+Confirm that the package and scripts are installed:
 
-Contém os algoritmos e componentes para a reconstrução tomográfica.
+```bash
+python -c "from Gimntools.GimnRec import __version__; print(__version__)"
+reconstruct_gate --help
+reconstruct_petsys --help
+gimntools_ui   # optional: requires a graphical desktop and Tkinter
+```
 
-*   **`reconstruction_filters.py`**: Implementa filtros usados na reconstrução FBP (Filtered Back-Projection), como Ram-Lak, Shepp-Logan, etc.
-*   **`projectors.py`**: Contém funções para a projeção (forward projection), que simula a aquisição de dados (cria um sinograma a partir de uma imagem).
-*   **`backprojectors.py`**: Contém funções para a retroprojeção (back-projection), o processo inverso da projeção, usado em algoritmos como FBP e iterativos.
-*   **`corrections.py`**: Funções para aplicar correções necessárias durante a reconstrução, como a correção do centro de rotação.
+> Distribution/project name: `GimnToolsV2`. **Python import is case-sensitive:**
+> `Gimntools.GimnRec`. Console scripts: `reconstruct_petsys`,
+> `reconstruct_gate`, and `gimntools_ui`.
 
-#### 2.1. `ImaGIMN.gimnRec.reconstructors`
-
-Implementações concretas de algoritmos de reconstrução.
-
-*   **`line_integral_reconstructor.py`**: Reconstrutor principal que implementa algoritmos baseados em integral de linha, como FBP, MLEM e OSEM. É uma classe versátil e de uso geral.
-*   **`rotation_reconstruction.py`**: Implementação que realiza a reconstrução baseada em rotações sucessivas da imagem. Serve como uma classe base ou alternativa para os reconstrutores.
-*   **`system_matrix_reconstruction.py`**: Reconstrutor que utiliza uma matriz de sistema pré-calculada para realizar as projeções e retroprojeções. Pode ser mais lento para gerar a matriz, mas mais rápido para iterar. Versão para CPU.
-*   **`system_matrix_reconstruction2.py`**: Uma segunda implementação (possivelmente experimental ou com otimizações diferentes) do reconstrutor baseado em matriz de sistema.
-
-### 3. `ImaGIMN.processing`
-
-Ferramentas para processamento e análise de imagens.
-
-#### 3.1. `ImaGIMN.processing.filters`
-
-*   **`spatial_filters.py`**: Contém filtros que operam diretamente na matriz de pixels. Inclui funções para convolução 2D, aplicação de filtros separáveis e extração de vizinhanças de pixels.
-*   **`frequency_filters.py`**: Implementa filtros no domínio da frequência, como o filtro Gaussiano e o Butterworth. Útil para suavização e realce de bordas.
-*   **`morphological_filters.py`**: Funções para morfologia matemática (Erosão, Dilatação, Abertura e Fechamento), usadas para análise de formas e estruturas na imagem.
-
-#### 3.2. `ImaGIMN.processing.interpolators`
-
-*   **`reconstruction.py`**: Fornece diferentes métodos de interpolação (Vizinho Mais Próximo, Bilinear, Spline Beta) que são cruciais para algoritmos de rotação e reconstrução, garantindo a precisão ao acessar valores de pixels em coordenadas não inteiras.
-
-#### 3.3. `ImaGIMN.processing.tools`
-
-*   **`kernels.py`**: Funções para gerar kernels (matrizes) usados em filtros de convolução, como kernels Gaussianos e Butterworth de diferentes tipos (passa-baixa, passa-alta).
-*   **`math.py`**: Funções matemáticas essenciais, como convolução e deconvolução no domínio da frequência (via FFT) e rotação de imagem com diferentes interpoladores.
-*   **`utils.py`**: Utilitários diversos, com destaque para a função de redimensionamento de imagem (`resize`) que suporta múltiplos métodos de interpolação.
-
-#### 3.4. `ImaGIMN.processing.ploter`
-
-*   **`ploter.py`**: Ferramenta de visualização para plotar múltiplos slices de um volume 3D (como um sinograma ou uma imagem reconstruída) em uma grade, facilitando a inspeção visual.
-
-### 4. `ImaGIMN.phantoms`
-
-*   **`derenzzo.py`**: Contém classes para a geração de phantoms de Derenzo, que são padrões de teste padrão em imagem médica para avaliar a resolução espacial de um sistema.
-
-
-##  Exemplos de Uso Práticos
-
-### Exemplo 1: Criação de imagens Aleatórias
+## Quick start: Python API
 
 ```python
-  
-from GimnTools.ImaGIMN.phantoms.random import generate_random_image
+import numpy as np
+from Gimntools.GimnRec import siddon_reconstructor
 
-"""Generates a random image for testing purposes."""
-import matplotlib.pyplot as plt
-pixels  = 128 # size off the image
-number_of_figures = 10 # number of figures in the image
+# A real sinogram with axes (slice, radial_bin, angle_bin).
+# Replace this array with your measured or simulated sinogram.
+sino = np.zeros((1, 64, 12), dtype=np.float64)
+sino[0, 32, :] = 100.0  # synthetic input ONLY: not scanner data
 
-# Generate a random image with specified number of figures using generate_random_image function
-# This function creates an image with random geometric figures like stars, ellipses, and polygons.
-# The figures are randomly placed and sized within the image.
-img = generate_random_image(pixels, number_of_figures)
-path = "./output/"
+# Acquisition convention must match the scanner / simulator.
+angles_deg = (np.arange(sino.shape[2]) + 0.5) * (180.0 / sino.shape[2])
 
-# Ensure the output directory exists
-# If it doesn't exist, create it
-Path(path).mkdir(parents=True, exist_ok=True)
-
-# Save the generated image to a file
-# The image is saved in PNG format with a specific filename
-filename = path + "random_image_test.png"
-
-# Display the image using matplotlib
-plt.figure(figsize=(6, 6))
-plt.clf()
-plt.axis('off')
-plt.imshow(img, cmap='jet')
-plt.title("Random Image Test")
-plt.savefig(filename, bbox_inches='tight', pad_inches=0.1)
-plt.show()
-print(f"Random image saved to {filename}")
-
-
+rec = siddon_reconstructor.for_volume(
+    sino, n_img=64, voxel_mm=0.42, sino_range_mm=26.88,
+)
+volume = rec.osem(
+    angles_deg, iterations=3, subsets_n=3,
+    regularization_every=0,
+    verbose=False,
+)
+print(volume.shape, rec.geometry())
 ```
-A seguir a imagem obtida do processo de geração de imagens randomicas para teste : 
 
-![Imagem aleatória gerada para fins de teste](https://github.com/michelraed/GimnTools/blob/main/output/random_image_test.png)
+This intentionally simplistic artificial input is only a smoke-test; it is
+**not** a physically realistic PET acquisition or a validation phantom.
+All reconstruction geometry must be expressed in **millimetres** and physical
+projection angles in **degrees** at the public API boundary.
 
-### Exemplo 2: Teste Shepp-Logan Phantom
+### Geometry and conventions
+
+- Sinogram shape: `(n_slices, n_radial_bins, n_angles)`.
+- `sino_range_mm`: total physical radial extent of the sinogram bins.
+- `n_img`, `voxel_mm`: output matrix width and in-plane voxel size.
+- Reconstruction FOV: `n_img * voxel_mm` when both are supplied.
+- `rays_per_bin`: optional sampling of sub-rays within each radial bin.
+- `cor_mm`: constant radial axis offset. PETSYS can also use calibrated
+  angular-dependent `dx_cor_mm`, `dy_cor_mm` and `phi_offset_deg`.
+- Rotation axes depend on `detector_config['rotate_along']`; raw ROOT branch
+  conventions and detector mapping must match the corresponding acquisition.
+
+## Command line: GATE
+
+```bash
+reconstruct_gate \
+  --measurement /path/to/simulation.root \
+  --detector-config examples/CONFIG_GATE/detector_config_gate.json \
+  --detectors-angles examples/CONFIG_GATE/detectors_angles.json \
+  --rsectors examples/CONFIG_GATE/rsectors_gate.json \
+  --process-as GateGlobalPositions \
+  --methods osem \
+  --n-img 128 \
+  --osem-iters 10 --osem-subsets 4 \
+  --gauss-every 0 \
+  --save-format nrrd --output-dir ./output_gate --no-plots
+```
+
+GATE modes include `CrystalID`, `GateGlobalPositions`,
+`GeneralGlobalPosition`, and `PaulGlobalPosition` as available in the relevant
+branch schema. Override `--rotate-along x|y|z` only when it matches the
+simulation geometry. Discover options with `reconstruct_gate --help`.
+
+## Command line: PETSYS
+
+```bash
+reconstruct_petsys \
+  --measurement /path/to/prompts.root \
+  --background /path/to/background.root \
+  --background-scale 1.0 \
+  --detector-config examples/CONFIG_PETSYS/detector_config_petsys.json \
+  --detectors-angles /path/to/measured_detector_angles.json \
+  --rsectors examples/CONFIG_PETSYS/rsectors_petsys.json \
+  --calibration /path/to/measured_calibration.json \
+  --methods osem \
+  --n-img 128 \
+  --osem-iters 10 --osem-subsets 4 \
+  --gauss-every 0 \
+  --save-format mhd --output-dir ./output_petsys --no-plots
+```
+
+`--background-scale` must represent the physically justified scaling from
+background acquisition to prompt acquisition (e.g. `T_prompts / T_background`
+if acquisition conditions and estimator permit simple time scaling).
+**Do not simply subtract a background histogram for MLEM/OSEM.** These
+algorithms use the nonnegative prompt count histogram and include the
+background estimate **additively** in the forward model. Background
+uncertainty is not propagated by the implemented likelihood.
+
+The PETSYS `calibration_TEMPLATE_DO_NOT_USE_FOR_REAL_DATA.json` is a schema
+example with zero offsets, **not** a calibration of any scanner. Determine
+COR and encoder offsets from a proper source/phantom calibration before
+quantitative processing. Sample detector mappings and hardware dimensions
+must be replaced with actual acquisition values.
+
+### Physical and statistical limitations
+
+The iterative model is based on independent Poisson prompt bins:
+
+\[
+Y_i \sim \operatorname{Poisson}(\mu_i),\qquad
+\mu_i = n_i (Hx)_i + b_i,\qquad x_j\ge 0.
+\]
+
+Here `H` is the geometric projector (optionally with an approximate radial
+PSF), `n_i` is a per-bin normalization factor and `b_i` is a background
+estimate in prompt-equivalent counts. Using `norm_sino = 1` implicitly
+assumes unit response and does **not** produce absolute activity units.
+
+For FBP, a linear background-subtracted sinogram may be used. Optional
+radial rebinning and angular smoothing are confined to the FBP branch,
+because preprocessing count bins as continuous intensities generally breaks
+independent-Poisson assumptions for EM reconstruction. The PSF here is an
+**approximate 1-D radial model**, not a full spatially varying detector
+response. Image smoothing during EM is heuristic regularization, not an
+unpenalized MLE solution. OSEM with several subsets does not generally
+provide monotonic whole-cycle log-likelihood ascent.
+
+The project does **not** provide independently validated scanner-specific
+corrections for attenuation, scatter, randoms, absolute normalization,
+dead time, TOF, or full 3-D oblique LOR geometry. Preserve raw data and
+reconstruction metadata for reproducibility.
+
+## GUI
+
+```bash
+gimntools_ui
+```
+
+GUI tabs support GATE and PETSYS input, sinogram visualization, EM/FBP
+reconstruction, orthogonal display, profile analysis and FWHM analysis.
+Loading or acquisition changes should be checked before exporting results.
+Tkinter needs an available graphical display. First Numba compilation can be
+slow. In case of GUI problems, first reproduce the computation with the CLI.
+
+## Outputs and data provenance
+
+- `*.mhd` + `*.raw` or `*.nrrd`: reconstructed image data via SimpleITK.
+- `*.npz`: NumPy arrays (including raw/FBP sinograms, reconstructed arrays
+  and JSON-encoded metadata depending on workflow).
+- `geometry_json` and (where provided) `calibration_used_json` are text
+  arrays, not Python object pickles. Read with:
 
 ```python
-from skimage.data import shepp_logan_phantom
+import json
+import numpy as np
 
-# Generate the Shepp-Logan phantom
-img = shepp_logan_phantom()
-
-# Resize the image to 128x128 pixels
-img = resize(img, (128, 128), anti_aliasing=True)
-
-noiser = noise_level
-resized_image = img * noiser
-noisy_image = np.random.poisson(resized_image).astype(np.float64)
-
-# Save the image to a file
-path = "./output/"
-Path(path).mkdir(parents=True, exist_ok=True)
-filename = path + "shepp_logan_phantom_test.png"
-
-plt.figure(figsize=(6, 6))
-plt.clf()
-plt.axis('off')
-plt.imshow(noisy_image, cmap='jet')
-plt.title("Shepp-Logan Phantom")
-plt.savefig(filename, bbox_inches='tight', pad_inches=0.1)
-plt.show()
-print(f"Shepp-Logan phantom saved to {filename}")
-
-```
-A seguir o fantoma de Shepp-Logan obtido, é utilizada a biblioteca Scipy para esta finalidade.
-
-![Imagem fantoma de Shepp-Logan](https://github.com/michelraed/GimnTools/blob/main/output/shepp_logan_phantom_test.png)
-
-### Exemplo 3: Gerar Fantoma de Derenzo
-
-```python
-
-from GimnTools.ImaGIMN.phantoms.derenzzo import DerenzoPhantomSlice
-
-"""
-Generates a Derenzo phantom image, resizes it, and saves it as a PNG file.
-"""
-import matplotlib.pyplot as plt
-
-# Teste do código adaptado
-radius = 29.0 / 2
-num_sections = 4
-well_counts = (6, 6, 10, 15)
-well_diameters = (2.5, 2.0, 1.5, 1.0)
-well_separations = (2.5, 2.0, 1.5, 1.0)
-section_offsets = (0.00000001, 0.01, 0.01, 0.1)  # Offset personalizado para cada seção
-circle_value = 1
-well_value = 10
-image_size = 128
-my_phantom = DerenzoPhantomSlice(radius, num_sections, well_counts, well_diameters, well_separations, section_offsets,
-                            image_size=image_size, circle_value=circle_value, well_value=well_value)
-
-#my_phantom.save_image('derenzo_phantom_with_offsets.png')
-
-# Obter a matriz da imagem contendo apenas o círculo de fundo
-circle_image_matrix = my_phantom.draw_only_circle()
-# Obter a matriz completa do fantoma
-phantom_matrix = my_phantom.get_image_matrix()
-
-noisy_image = np.random.poisson(phantom_matrix*noise_factor).astype(np.float64)
-
-plt.imshow (noisy_image, cmap='jet')
-plt.title('Derenzo Phantom with Noise')
-plt.colorbar()
-print(f"✅ Imagem simulada de um fantoma derenzo de raio {radius}mm e poços com diametros {well_diameters} mm  com ruído foi criada e tem dimensões: {noisy_image.shape}")
-
-path = "./output/"
-Path(path).mkdir(parents=True, exist_ok=True)
-plt.savefig(path + "derenzo_phantom_test.png", bbox_inches='tight', pad_inches=0.1)
-```
-A seguir a imagem do fantoma de Derenzo gerado nesta função:
-
-![Imagem Fantoma de derenzo](https://github.com/michelraed/GimnTools/blob/main/output/derenzo_phantom_test.png)
-
-
-## Exemplo 3: Reconstrução usando reconstrutor com projetor baseado na rotação da imagem
-
-```python
-
-from GimnTools.ImaGIMN.gimnRec.reconstructors.rotation_reconstruction import rotation_reconstructor
-from GimnTools.ImaGIMN.processing.interpolators.reconstruction import beta_spline_interpolation, bilinear_interpolation, nearest_neighbor_interpolation
-from GimnTools.ImaGIMN.gimnRec.reconstruction_filters import ramLak
-from GimnTools.ImaGIMN.gimnRec.projectors import radon_m, projector, direct_radon
-
-
-
-pixels = 128  # Size of the image
-number_of_angles = pixels  # Number of angles for the sinogram
-number_of_slices = 2  # Number of slices in the stack
-
-# Generate a derenzo phantom image with noise
-noisy_image = derenzo_phantom_test(noise_factor=0.3)
-angles = np.linspace(0, 180, number_of_angles, endpoint=True)
-sinogram = direct_radon(noisy_image, angles)
-stack = np.asarray([sinogram for _ in range(number_of_slices)])
-
-
-reconstructor = rotation_reconstructor()
-reconstructor.set_sinogram(stack)
-#reconstructor.set_sinogram(sino) 
-
-iterations = 3
-subsets = 8 #2, 4, 8, 16
-
-angles_here = angles+180
-recon_osem_rot = reconstructor.osem(iterations,subsets, bilinear_interpolation, angles=angles_here, verbose=False)
-recon_mlem_rot = reconstructor.mlem(iterations*subsets, bilinear_interpolation, angles=angles_here, verbose=False)
-recon_fbp_rot= reconstructor.fbp(bilinear_interpolation, ramLak, angles=angles_here)
-
-cmap = 'jet'
-# Display the reconstructed images        
-plt.figure(figsize=(12, 8))
-plt.subplot(1, 3, 1)
-plt.imshow(recon_osem_rot[0], cmap=cmap)
-plt.title('OSEM Reconstruction (Rotation)')
-plt.axis('off')
-plt.subplot(1, 3, 2)
-plt.imshow(recon_mlem_rot[0], cmap=cmap)
-plt.title('MLEM Reconstruction (Rotation)')
-plt.axis('off')
-plt.subplot(1, 3, 3)
-plt.imshow(recon_fbp_rot[0], cmap=cmap)
-plt.title('FBP Reconstruction (Rotation)')
-plt.axis('off') 
-plt.tight_layout()
-# Save the reconstructed images
-path = "./output/"
-Path(path).mkdir(parents=True, exist_ok=True)
-plt.savefig(path + "rotation_reconstructor_test.png", bbox_inches='tight', pad_inches=0.1)
-print(f"✅ Rotation reconstructor test completed successfully. Images saved to {path}rotation_reconstructor_test.png")
-        
-
+with np.load('output.npz', allow_pickle=False) as d:
+    geom = json.loads(str(d['geometry_json']))
+    print(geom)
 ```
 
+These keys are applicable to newly generated NPZ outputs; specific keys and
+file names depend on the selected CLI/pipeline. Record software version,
+scan duration, energy window, binning, calibration, background scale, matrix,
+voxel size, algorithm, iterations, subsets and all post-processing options.
 
+## Testing
 
-Os dados reconstruídos devem seguir o seguinte padrão : 
+For contributors with the source checkout:
 
-![Resultado da Reconstrução com o reconstrutor baseado na rotação da imagem para o fantoma de Derenzo.](https://github.com/michelraed/GimnTools/blob/main/output/rotation_reconstructor_test.png)
-
-
-
-### Exemplo 3: Reconstrutor baseado na integral da linha de projeção
-
-```python
-from GimnTools.ImaGIMN.gimnRec.reconstructors.line_integral_reconstructor import line_integral_reconstructor
-import matplotlib.pyplot as plt
-
-
-pixels = 128  # Size of the image
-number_of_angles = pixels  # Number of angles for the sinogram
-number_of_slices = 2  # Number of slices in the stack
-
-# Generate a derenzo phantom image with noise
-noisy_image = derenzo_phantom_test(noise_factor=0.3)
-angles = np.linspace(0, 180, number_of_angles, endpoint=True)
-sinogram = direct_radon(noisy_image, angles)
-stack = np.asarray([sinogram for _ in range(number_of_slices)])
-
-
-reconstructor = rotation_reconstructor()
-reconstructor.set_sinogram(stack)
-#reconstructor.set_sinogram(sino) 
-
-iterations = 3
-subsets = 8 #2, 4, 8, 16
-
-#==========================================================
-#                 Reconstruir Line Integral
-#==========================================================
-#para este deve ser slice/bins/angle
-angles_m1 = np.linspace(0, 180, number_of_angles, endpoint=True)
-# angles_sm = np.linspace(180,0 , number_of_angles, endpoint=False)
-
-reconstructor = line_integral_reconstructor(stack)
-# recon_osem_li = reconstructor.osem(iterations,subsets, angles_m1, verbose=False)
-# recon_mlem_li = reconstructor.mlem(iterations*subsets, angles_m1, verbose=False)
-# recon_fbp_li = reconstructor.fbp( ramLak, angles)
-# reconstructor.set_sinogram(stack)
-
-iterations = [5]
-subsets = [32] 
-pilha = []
-
-for i in range(stack.shape[0]):
-    for iter in iterations:
-        for subset in subsets:
-            print(f'Processing - iteration: {iter}\tsubset: {subset}')
-            sino = stack[i:i+1, :, :]
-
-            reconstructor.set_sinogram(sino)
-            # Cria o dicionário com a estrutura especificada
-            recon = {}
-            recon["iterative_method"] = "OSEM/MLEM"
-            recon["iteration"] = iter
-            recon["subset"] = subset
-            recon["total_iterations"] = iter * subset
-            recon["sinogram"] = i + 1
-            recon ["image_OSEM"] = reconstructor.osem(iter, subset, angles_m1, verbose=False)
-            recon ["image_MLEM"] = reconstructor.mlem(iter * subset, angles_m1)   
-            recon["analytic_method"] = "FBP"
-            recon["fbp_image"] = reconstructor.fbp(ramLak, angles)
-            pilha.append(deepcopy(recon))
-
-plt.figure(figsize=(12, 8))
-plt.subplot(1, 3, 1)
-cmap = 'jet'
-plt.imshow(pilha[0]["image_MLEM"][0], cmap=cmap)
-plt.title('Line Integral MLEM Reconstruction')
-plt.axis('off')
-plt.subplot(1, 3, 2)
-plt.imshow(pilha[0]["image_OSEM"][0], cmap=cmap)
-plt.title('Line Integral OSEM Reconstruction')
-plt.axis('off')
-plt.subplot(1, 3, 3)
-plt.imshow(pilha[0]["fbp_image"][0], cmap=cmap)
-plt.title('Line Integral FBP Reconstruction')
-plt.axis('off')
-plt.tight_layout()
-# Display the reconstructed image
-# Save the reconstructed images
-path = "./output/"
-Path(path).mkdir(parents=True, exist_ok=True)
-plt.savefig(path + "line_integral_reconstructor_test.png", bbox_inches='tight',
-                pad_inches=0.1) 
-print(f"✅ Line integral reconstructor test completed successfully. Images saved to {path}line_integral_reconstructor_test.png")
+```bash
+python -m pip install -e '.[dev]'
+python -m pytest tests/ -q
 ```
 
-Os dados reconstruídos devem seguir o seguinte padrão : 
+For GUI tests on a Linux CI server, install Xvfb and run:
 
-![Resultado da Reconstrução com o reconstrutor de integral de linha para o fantoma de Derenzo.](https://github.com/michelraed/GimnTools/blob/main/output/line_integral_reconstructor_test.png)
-
-
-### Exemplo 3: Reconstrutor System Matrix
-
-```python
-
-from GimnTools.ImaGIMN.gimnRec.reconstructors.system_matrix_reconstruction import reconstructor_system_matrix_cpu
-import matplotlib.pyplot as plt
-pixels = 128  # Size of the image
-number_of_angles = pixels  # Number of angles for the sinogram
-number_of_slices = 2  # Number of slices in the stack
-
-# Generate a derenzo phantom image with noise
-noisy_image = derenzo_phantom_test(noise_factor=0.3)
-angles = np.linspace(0, 180, number_of_angles, endpoint=True)
-sinogram = direct_radon(noisy_image, angles)
-stack = np.asarray([sinogram for _ in range(number_of_slices)])
-
-
-# neste reconstrutor os angulos tem que ser invertidos linspace(180,0)
-# Para este cara deve ser Slice/Angle/bins
-angles_sm = np.linspace(180,0 , number_of_angles, endpoint=False)
-stk = np.transpose(stack, (0, 2, 1)) 
-
-iterations = 3 
-subsets = 8 
-
-reconstructor = reconstructor_system_matrix_cpu(stk)
-recon_osem_sm = reconstructor.osem(iterations,subsets, angles_sm, show_images=False)
-recon_mlem_sm = reconstructor.mlem(iterations*subsets, angles_sm)
-
-cmap = 'jet'
-plt.figure(figsize=(12, 8))
-plt.subplot(1, 3, 1)
-plt.imshow(noisy_image, cmap=cmap)
-plt.title('Original Derenzo Phantom with Noise')
-plt.axis('off')
-plt.subplot(1, 3, 2)
-plt.imshow(recon_osem_sm[0], cmap=cmap)
-plt.title('System Matrix OSEM Reconstruction')
-plt.axis('off')
-plt.subplot(1, 3, 3)
-plt.imshow(recon_mlem_sm[0], cmap=cmap) 
-plt.title('System Matrix MLEM Reconstruction')
-plt.axis('off')
-plt.tight_layout()
-# Save the reconstructed images
-path = "./output/"
-Path(path).mkdir(parents=True, exist_ok=True)
-plt.savefig(path + "system_matrix_reconstructor_test.png", bbox_inches='tight', pad_inches=0.1)
-print(f"✅ System matrix reconstructor test completed successfully. Images saved to {path}system_matrix_reconstructor_test.png")
-
+```bash
+xvfb-run -a python -m pytest tests/ -q
 ```
-Os dados reconstruídos devem seguir o seguinte padrão : 
 
-![Resultado da Reconstrução com o reconstrutor baseado na matriz do sistema para o fantoma de Derenzo.](https://github.com/michelraed/GimnTools/blob/main/output/system_matrix_reconstructor_test.png)
+The prior repaired codebase reported **183 passing automated tests** using a
+virtual graphical display. That is a historical regression result and not
+an assertion of scanner-specific quantitative validation. Re-run the suite
+with your environment and dependencies before any tagged publication.
 
+## Repository tree
 
+```text
+GimnToolsV2/
+├── pyproject.toml               # build metadata, dependencies and CLI entry points
+├── README.md                    # complete technical user guide
+├── LICENSE, NOTICE              # MIT terms and scientific attribution request
+├── CITATION.cff                 # machine-readable publication citation
+├── CODE_OF_CONDUCT.md           # participation and moderation policy
+├── CONTRIBUTING.md              # contribution / reproducibility rules
+├── CHANGELOG.md                 # changes affecting numerical results
+├── PUBLISHING_PYPI.md           # release steps (in Portuguese)
+├── examples/                    # scripts and editable JSON templates (NO scanner data)
+├── tests/                       # regression tests (source checkout / sdist)
+└── src/Gimntools/GimnRec/      # package, geometry, pipelines, CLI and GUI
+```
 
-##  API Reference
+The public repository intentionally excludes recorded PET datasets, phantom
+image files, calibration fit outputs, executed notebooks, logs and audits.
+Generated wheels contain only importable package modules, packaging metadata
+and license notices. The source distribution contains tests and examples.
 
-### `ImaGIMN.IO.MIIO`
+## Citation and reuse
 
-| Classe/Método | Descrição | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| `MIIO` | Classe para I/O de imagens DICOM. | - | `MIIO object` |
-| `renormalize` | Normaliza a imagem para um tipo de dado. | `image` (ndarray), `dtype` (type) | `tuple` (ndarray, dict) |
-| `save_dicom` | Salva um array como arquivo DICOM. | `image` (ndarray), `nome_arquivo` (str), `origin` (tuple), `spacing` (tuple), `save_json` (bool) | - |
+**Please cite GimnToolsV2 in publications, theses, reports and conference
+presentations that use its outputs**, indicating the exact version. The
+recommended software citation is:
 
-### `ImaGIMN.phantoms.derenzzo.DerenzoPhantomSlice`
+> Raed, M. D. (2026). *GimnToolsV2: Tomographic Reconstruction Toolkit for
+> Preclinical PET* (Version 0.4.3) [Computer software].
 
-| Método/Propriedade | Descrição | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| `__init__` | Inicializa o phantom. | `radius`, `num_sections`, `well_counts`, `well_diameters`, `well_separations`, `section_offsets`, etc. | - |
-| `save_image` | Salva o phantom como imagem. | `filename` (str) | - |
-| `get_image_matrix` | Retorna a matriz de pixels do phantom. | - | `numpy.ndarray` |
+BibTeX (add a repository URL and archival DOI when these exist):
 
-### `ImaGIMN.processing.interpolators.reconstruction`
+```bibtex
+@software{raed_gimntoolsv2_2026,
+  author = {Raed, Michel David},
+  title = {GimnToolsV2: Tomographic Reconstruction Toolkit for Preclinical PET},
+  year = {2026},
+  version = {0.4.3},
+  note = {Computer software; MIT License}
+}
+```
 
-| Função | Descrição | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| `beta_spline_interpolation` | Interpolação Spline Beta. | `p00`, `p01`, `p10`, `p11` (float), `dx` (float), `dy` (float) | `float` |
-| `bilinear_interpolation` | Interpolação Bilinear. | `p00`, `p01`, `p10`, `p11` (float), `dx` (float), `dy` (float) | `float` |
-| `nearest_neighbor_interpolation` | Interpolação do Vizinho Mais Próximo. | `p00`, `p01`, `p10`, `p11` (float), `dx` (float), `dy` (float) | `float` |
+See [CITATION.cff](CITATION.cff). Once the project has a GitHub release, you
+can connect the repository to Zenodo to receive a persistent DOI; **do not
+cite an invented DOI**. In an article Methods section, also report the
+reconstruction pipeline and parameters needed to reproduce the results.
 
-### `ImaGIMN.processing.tools.kernels`
+**Legal distinction:** MIT is a genuine permissive open-source license;
+any redistribution must retain its copyright and license notices.
+A **scholarly paper citation is strongly requested but is not a separate
+legal condition of the MIT License**. An additional enforceable citation
+condition would require a different, specialist-reviewed license and could
+prevent classification as standard open-source software. See [NOTICE](NOTICE).
 
-| Função | Descrição | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| `generate_gaussian_kernel_in_mm`| Gera um kernel Gaussiano. | `size` (int), `sigma_mm` (float), `pixel_size_mm` (float) | `ndarray` |
-| `butterworth_kernel` | Gera um kernel Butterworth. | `size` (int), `order` (int), `cutoff` (float), `pixel_size_mm` (float) | `ndarray` |
-| `butterworth_kernel_high_pass`| Gera um kernel Butterworth passa-alta. | `size` (int), `order` (int), `cutoff` (float), `pixel_size_mm` (float) | `ndarray` |
-| `butterworth_kernel_low_pass` | Gera um kernel Butterworth passa-baixa.| `size` (int), `order` (int), `cutoff` (float), `pixel_size_mm` (float) | `ndarray` |
+## Contributing, conduct and license
 
-### `ImaGIMN.processing.tools.math`
+Contributions, reproducible bug reports and numerical validation phantoms
+are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). All project code is distributed
+under the [MIT License](LICENSE). Copyright © 2026 Michel David Raed.
 
-| Função | Descrição | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| `deconvolution` | Deconvolução no domínio da frequência. | `image` (ndarray), `function` (ndarray) | `ndarray` |
-| `convolution` | Convolução no domínio da frequência. | `image` (ndarray), `kernel` (ndarray) | `ndarray` |
-| `rotate` | Rotaciona uma imagem. | `image` (ndarray), `angle` (float), `interpolation_func` (function), `center` (tuple) | `ndarray` |
+## Algorithm references
 
-### `ImaGIMN.processing.tools.utils`
-
-| Função | Descrição | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| `resize` | Redimensiona uma imagem. | `input_img` (ndarray), `mx` (int), `my` (int), `interpolation` (str) | `ndarray` |
-
-### `ImaGIMN.processing.ploter.ploter`
-
-| Função | Descrição | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| `plot_slices` | Plota slices de um volume 3D. | `sinogram` (ndarray), `n_slices` (int), `x_extent` (tuple), `y_extent` (tuple), `rows` (int), `cols` (int), etc. | - |
-
-### `ImaGIMN.gimnRec.reconstructors.rotation_reconstruction.rotation_reconstructor`
-
-| Método | Descrição | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| `mlem` | Reconstrução MLEM baseada em rotação. | `iterations` (int), `interpolation` (function), `angles` (ndarray), `verbose` (bool) | `ndarray` |
-| `osem` | Reconstrução OSEM baseada em rotação. | `iterations` (int), `subsets_n` (int), `interpolation` (function), `angles` (ndarray), `verbose` (bool) | `ndarray` |
-
-### `ImaGIMN.gimnRec.reconstructors.system_matrix_reconstruction2.reconstructor_system_matrix_cpu`
-
-*Nota: Esta classe herda de `line_integral_reconstructor`, então possui os mesmos métodos base.*
-
-| Método | Descrição | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| `mlem_tv` | MLEM com regularização Total Variation. | `iterations` (int), `beta` (float), `angles` (ndarray), `verbose` (bool) | `ndarray` |
-
-
-## 🤝 Contribuindo
-
-Contribuições são bem-vindas! Para contribuir:
-
-1. **Fork** o projeto
-2. **Clone** seu fork: `git clone https://github.com/seu-usuario/GimnTools.git`
-3. **Crie uma branch**: `git checkout -b feature/nova-funcionalidade`
-4. **Instale para desenvolvimento**: `make install-dev`
-5. **Faça suas alterações** e adicione testes
-6. **Execute testes**: `make test`
-7. **Formate o código**: `make format`
-8. **Commit**: `git commit -m "Adiciona nova funcionalidade"`
-9. **Push**: `git push origin feature/nova-funcionalidade`
-10. **Abra um Pull Request**
-
-
-## 📄 Licença
-
-Este projeto está licenciado sob a licença Apache 2.0. Veja o arquivo [LICENSE](LICENSE) para detalhes.
-
-## 🆘 Suporte
-
-- **Issues**: [https://github.com/usuario/GimnTools/issues](https://github.com/michelraed/GimnTools/issues/2)
-- **Discussões**:[https://github.com/usuario/GimnTools/discussions](https://github.com/michelraed/GimnTools/discussions/1)
-- **Email**: michelraed@gmail.com
-
-
-
-
-**GimnTools** - Ferramentas para reconstrução e processamento de imagens médicas em Python.
-
-
-
-
+- Shepp LA, Vardi Y. Maximum likelihood reconstruction for emission
+  tomography. *IEEE Trans Med Imaging*. 1982;1:113–122.
+  [doi:10.1109/TMI.1982.4307558](https://doi.org/10.1109/TMI.1982.4307558)
+- Hudson HM, Larkin RS. Accelerated image reconstruction using ordered
+  subsets of projection data. *IEEE Trans Med Imaging*. 1994;13:601–609.
+  [doi:10.1109/42.363108](https://doi.org/10.1109/42.363108)
+- Siddon RL. Fast calculation of the exact radiological path for a
+  three-dimensional CT array. *Med Phys*. 1985;12:252–255.
+  [doi:10.1118/1.595715](https://doi.org/10.1118/1.595715)
+- Goertzen AL et al. NEMA NU 4-2008 comparison of preclinical PET imaging
+  systems. *J Nucl Med*. 2012;53:1300–1309.
+  [doi:10.2967/jnumed.111.099382](https://doi.org/10.2967/jnumed.111.099382)
