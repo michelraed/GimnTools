@@ -1,9 +1,8 @@
 cff-version: 1.2.0
-message: "If GimnToolsV2 contributes to research or a scientific publication, please cite this software and specify the version used."
+message: "If GimnTools contributes to research or a scientific publication, please cite this software and specify the version used."
 type: software
-title: "GimnToolsV2: Tomographic Reconstruction Toolkit for Preclinical PET"
-version: 0.4.3
-date-released: 2026-10-15
+title: "GimnTools: Tomographic Reconstruction Toolkit for Preclinical PET"
+version: 2.0.0
 license: MIT
 authors:
   - family-names: Raed

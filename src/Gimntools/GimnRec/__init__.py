@@ -30,7 +30,7 @@ therefore imports lazily and never fails at package-import time just
 because an optional dependency is missing.
 """
 
-__version__ = "0.4.3"
+__version__ = "2.0.0"
 
 __all__ = [
     "siddon_reconstructor",

@@ -1,0 +1,52 @@
+name: Publish GimnTools to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event.release.tag_name == 'v2.0.0'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify release metadata
+        run: |
+          python - <<'PY'
+          import pathlib, tomllib
+          metadata = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          assert metadata["project"]["name"] == "GimnTools"
+          assert metadata["project"]["version"] == "2.0.0"
+          PY
+      - name: Build release
+        run: |
+          python -m pip install -U build twine
+          python -m build
+          python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gimntools-distributions
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/GimnTools/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gimntools-distributions
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

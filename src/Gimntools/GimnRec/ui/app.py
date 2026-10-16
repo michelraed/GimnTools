@@ -3037,7 +3037,7 @@ def _f(txt):
 class ReconUI(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("GimnToolsV2 — PET Reconstruction (GATE / PETSYS)")
+        self.title("GimnTools — PET Reconstruction (GATE / PETSYS)")
         self.geometry("1300x850")
 
         # shared state

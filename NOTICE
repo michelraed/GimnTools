@@ -1,4 +1,4 @@
-GimnToolsV2 — Attribution and scientific citation
+GimnTools — Attribution and scientific citation
 
 Copyright (c) 2026 Michel David Raed.
 
@@ -8,7 +8,7 @@ substantial portions of the software. No separate citation condition is
 imposed on running, studying, modifying, or redistributing the software.
 
 Scientific attribution request (research good practice, not an additional
-legal license condition): If GimnToolsV2 is used to produce results reported
+legal license condition): If GimnTools is used to produce results reported
 in an article, thesis, poster, or other scientific work, cite the software
 and state the exact version, reconstruction method, and key parameters.
 See CITATION.cff and the citation examples in README.md.

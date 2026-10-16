@@ -3,8 +3,8 @@ requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "GimnToolsV2"
-version = "0.4.3"
+name = "GimnTools"
+version = "2.0.0"
 authors = [{ name = "Michel David Raed", email = "michelraed@gmail.com" }]
 description = "Research toolkit for preclinical PET sinogram generation and tomographic reconstruction (PETSYS/GATE)"
 readme = { file = "README.md", content-type = "text/markdown" }

@@ -27,7 +27,7 @@ import sqlite3
 
 import numpy as np
 
-APP_NAME = "GimnToolsV2"
+APP_NAME = "GimnTools"
 
 
 def user_data_dir(app=APP_NAME):

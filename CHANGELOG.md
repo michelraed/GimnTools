@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0 — Public release
+
+- Unified PyPI distribution name: `GimnTools` (previous internal distribution name `GimnToolsV2`).
+- The importable namespace remains `Gimntools.GimnRec` (case-sensitive on Linux).
+- **Breaking change:** GimnTools 2.0.0 targets preclinical PET reconstruction (PETSYS/GATE). It does not preserve the complete `GimnTools.ImaGIMN` API from PyPI version 1.0.0.0. Users requiring older APIs should pin `GimnTools==1.0.0.0`.
+- Numerical, statistical and geometrical fixes described in the 0.4.3 development changelog.
+- Scanner-specific experimental validation is pending.
+
+
 ## 0.4.3 — 2026-10-15 — revisão estatística, geométrica e de integridade
 
 - Separação explícita dos prompts e do fundo aditivo no MLEM/OSEM. `--background-scale` obrigatório na CLI PETSYS.

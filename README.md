@@ -1,9 +1,9 @@
-# GimnToolsV2
+# GimnTools
 
 **Research-oriented preclinical PET reconstruction — PETSYS and GATE**  
-**Version:** 0.4.3 · **Python:** 3.10+ · **License:** MIT · **Author:** Michel David Raed
+**Version:** 2.0.0 · **Python:** 3.10+ · **License:** MIT · **Author:** Michel David Raed
 
-GimnToolsV2 is an open-source Python toolkit for creating sinograms from
+GimnTools is an open-source Python toolkit for creating sinograms from
 coincidence events and reconstructing **slice-wise 2-D PET images** from
 rotating-detector PET acquisitions. It supports experimental **PETSYS** data
 and **GATE** Monte Carlo simulation ROOT files, with a Python API, terminal
@@ -14,6 +14,10 @@ commands and a Tkinter interface.
 > activity calibration, NEMA compliance or fitness for clinical diagnosis.
 > This is a slice-wise reconstruction framework, **not** a validated full-3-D,
 > oblique-LOR or time-of-flight PET reconstruction system.
+
+## Compatibility with GimnTools 1.x
+
+**Major-version compatibility warning:** Version 2.0.0 replaces the previous `GimnTools` distribution (1.0.0.0) with a PETSYS/GATE reconstruction toolkit. The old `GimnTools.ImaGIMN` Python API is **not** included. Existing users who depend on that API should remain on `GimnTools==1.0.0.0` until their code is migrated. Python imports for this version are case-sensitive: `Gimntools.GimnRec`.
 
 ## Features
 
@@ -56,7 +60,7 @@ installers. On headless Linux servers use the CLI; do not run the GUI.
 locally even if the PyPI project does not exist yet):
 
 ```bash
-python -m pip install GimnToolsV2==0.4.3
+python -m pip install GimnTools==2.0.0
 ```
 
 **From the project directory** (editable development checkout):
@@ -68,7 +72,7 @@ python -m pip install -e .
 **From the wheel** distributed in this release:
 
 ```bash
-python -m pip install ./dist/gimntoolsv2-0.4.3-py3-none-any.whl
+python -m pip install ./dist/gimntools-2.0.0-py3-none-any.whl
 ```
 
 We recommend an isolated environment to avoid incompatible scientific
@@ -97,7 +101,7 @@ reconstruct_petsys --help
 gimntools_ui   # optional: requires a graphical desktop and Tkinter
 ```
 
-> Distribution/project name: `GimnToolsV2`. **Python import is case-sensitive:**
+> Distribution/project name: `GimnTools`. **Python import is case-sensitive:**
 > `Gimntools.GimnRec`. Console scripts: `reconstruct_petsys`,
 > `reconstruct_gate`, and `gimntools_ui`.
 
@@ -281,7 +285,7 @@ with your environment and dependencies before any tagged publication.
 ## Repository tree
 
 ```text
-GimnToolsV2/
+GimnTools/
 ├── pyproject.toml               # build metadata, dependencies and CLI entry points
 ├── README.md                    # complete technical user guide
 ├── LICENSE, NOTICE              # MIT terms and scientific attribution request
@@ -302,21 +306,21 @@ and license notices. The source distribution contains tests and examples.
 
 ## Citation and reuse
 
-**Please cite GimnToolsV2 in publications, theses, reports and conference
+**Please cite GimnTools in publications, theses, reports and conference
 presentations that use its outputs**, indicating the exact version. The
 recommended software citation is:
 
-> Raed, M. D. (2026). *GimnToolsV2: Tomographic Reconstruction Toolkit for
-> Preclinical PET* (Version 0.4.3) [Computer software].
+> Raed, M. D. (2026). *GimnTools: Tomographic Reconstruction Toolkit for
+> Preclinical PET* (Version 2.0.0) [Computer software].
 
 BibTeX (add a repository URL and archival DOI when these exist):
 
 ```bibtex
-@software{raed_gimntoolsv2_2026,
+@software{raed_gimntools_2026,
   author = {Raed, Michel David},
-  title = {GimnToolsV2: Tomographic Reconstruction Toolkit for Preclinical PET},
+  title = {GimnTools: Tomographic Reconstruction Toolkit for Preclinical PET},
   year = {2026},
-  version = {0.4.3},
+  version = {2.0.0},
   note = {Computer software; MIT License}
 }
 ```

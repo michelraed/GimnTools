@@ -1,6 +1,6 @@
-# Contributing to GimnToolsV2
+# Contributing to GimnTools
 
-Thank you for your interest in contributing. GimnToolsV2 is a research-oriented
+Thank you for your interest in contributing. GimnTools is a research-oriented
 tomographic reconstruction toolkit for preclinical PET; contributions that
 improve correctness, documentation, and test coverage are especially welcome.
 
