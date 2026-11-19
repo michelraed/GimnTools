@@ -90,13 +90,45 @@ efficiency can enter the public EM API as diagonal normalization.
 The legacy geometric-acceptance option would count detector acceptance
 twice with DOI.
 
-PETSYS requires a segmented lattice aligned to the slice axes. The loader
-checks that accepted transverse SiPM coordinates are within 1% of a pitch
-of a nominal center and that the hits are on opposite heads. For GATE,
-build the sinogram in `CrystalID` mode. DOI requires all configured poses
-in the input ROOT and a raw, unrebinned sinogram. MLEM/OSEM report an error
-for positive counts in bins with neither modeled sensitivity nor background. A recording
-with continuous SiPM hit estimates needs a different acquisition model.
+PETSYS requires a segmented lattice aligned to the slice axes. GimnROOT
+maps `channelID` to row `I` and column `J` with
+`SiPM::CorrectChannelToPixelPs`. Before alignment, the stored coordinate
+conventions are `X = (J−3.5) pitch_x` and `Y = (3.5−I) pitch_y` for the
+8 × 8 grid. `ProcessAcquisition.C` optionally subtracts the chip's
+`alignmentCorrection[x,y]` from those coordinates. The Anger-coordinate
+branches are separate and do not enter this segmented model.
+
+GimnROOT commit `31b862f` assigns `tse1.posJ = first_j2` after reading
+`first_j1` and `first_j2` independently. In affected files, `posJ_1`
+contains the column of hit 2. GimnTools derives both IDs from
+`channelID_1/2`, cross-checks `posI_1/2` and `posJ_2` when present, and
+does not use `posJ_1`. The upstream repository is unchanged.
+
+GimnTools compares the decoded crystal centers with the stored measurements
+to recover the constant per-chip translation. It checks the original
+1%-of-pitch residual tolerance after the translation and verifies each
+observed transverse center is stable within float32 storage precision.
+It keeps the observed encoded centers for measured bin labels, including
+the configured local Z rotation and coordinate reversal. This follows
+GimnROOT's local conversion from `(X,Y,depth)` to `(depth,Y,X)` after its
+chip rotation. GimnTools uses the raw `SiPMPosX/Y` branches and applies
+its own configured detector placement and object angle once. It does not
+reuse the already-transformed `globalPos` or `rSino` branches. Physical
+quadrature uses the configured nominal crystal volumes. If the scanner
+survey requires a physical displacement, specify it through the scanner
+geometry rather than reusing an image-alignment offset. Data without the
+GimnROOT channel branches retain the nominal-grid check. Inconsistent
+channel/index data, continuously changing translations and same-head
+coincidences remain incompatible with DOI.
+
+For GATE, build the sinogram in `CrystalID` mode. DOI requires all
+configured poses in the input ROOT and a raw, unrebinned sinogram.
+MLEM/OSEM report an error for positive counts in bins with neither modeled
+sensitivity nor background.
+
+[GimnROOT coincidence writer](https://github.com/michelraed/GimnRoot/blob/31b862ff72ca9aefc15a54c32990568c29576871/source/92-TomoProcessing/ProcessAcquisition.C#L2748)
+· [GimnROOT channel map](https://github.com/michelraed/GimnRoot/blob/31b862ff72ca9aefc15a54c32990568c29576871/source/2-histograms/SiPM.C#L332)
+· [GimnROOT coordinate transforms](https://github.com/michelraed/GimnRoot/blob/31b862ff72ca9aefc15a54c32990568c29576871/source/91-sinogram/GantryPositions.C#L170)
 
 The [synthetic phantom example](../examples/detector_response_phantom.py)
 compares the four operator configurations. Its reconstructed-source widths
@@ -159,3 +191,74 @@ The numerical quadrature and sparse methods impose size limits and raise
 an error when those limits are exceeded. Use a smaller reconstruction
 grid or smaller quadrature orders and check convergence before comparing
 quantitative results.
+
+
+## Full analytical response and automatic LUT generation
+
+The full operator models collinear photons and first interaction at
+511 keV in the transaxial plane. For a ray that crosses a crystal after
+traversing a total scintillator length `L_pre`, its interaction probability
+in a further chord of length `L_c` is
+`exp(-μ L_pre) (1 - exp(-μ L_c))`. Gap lengths have no attenuation in this
+model. The implementation integrates its differential form
+`μ exp(-μ (L_pre + ℓ)) dℓ` at both interaction points. Slab intersections
+include lateral entry or exit and preceding neighboring crystals.
+Interaction locations are integrated with Gauss–Legendre quadrature in the
+transverse and depth coordinates of both segments. The change of variables
+to a line and its two interaction locations contributes the inverse
+endpoint separation. The line measure is normalized by π and by the
+voxel area. Siddon integrates the ray over each voxel. Columns retain
+geometrical and interaction efficiency, including losses from the
+measured bin range. The resulting CSR matrix supports its exact
+transpose. Relative pose exposure is normalized to unit sum, with equal
+exposure by default. Python callers can supply a `pose_exposure` list in
+sorted `object_angles_deg` order in the acquisition metadata.
+
+Select **Analytical detector response** in either UI, or use
+`--analytical-response` together with both DOI parameters in either
+reconstruction CLI. The reconstruction field must lie between both
+detector faces for all poses. Converge the face and depth orders on the
+grid you intend to use. In a synthetic check with central and displaced
+sources, the relative projection differences versus order 9 dropped
+from 7.0–7.8% at order 3 to 1.5–1.6% at order 5 for both coordinates.
+
+Use **Generate analytical LUT…** in Tk or the **Analytical LUT** tab in Qt
+to sample this response automatically. The generator fits each sampled
+projection column using a nonnegative unit-mass kernel composed with
+Siddon. The reference projection is multiplied by the ratio of the
+analytical and Siddon projections of a uniform image, bin by bin.
+This lets the reference represent the detector's acceptance even in bins
+with zero support. The fit minimizes a weighted relative projection
+residual and a kernel gradient penalty, with a free
+nonnegative amplitude eliminated analytically. `kernel_stride` sets the
+kernel sampling in integer voxel steps. The saved NPZ includes the
+fitted amplitude, analytical efficiency, relative error, processing time
+and provenance. The NPZ also stores the matched reference acceptance
+and its grid. Use this kernel with the same image and sinogram geometry.
+The normalized kernel alone does not carry efficiency.
+The preview shows a sampled kernel, X/Y marginal profiles, centroid,
+reflection asymmetry, fit error and FWHM where both half-height crossings
+are sampled. Fits with large projection error should use the direct
+analytical operator. FWHM here describes the fitted kernel on a chosen
+grid.
+
+Generated LUTs include DOI and load as a standalone SV-PSF. A nontrivial
+residual LUT needs independent physics or a calibration relative to a DOI
+reference. The generator only exports the full response. It assumes no
+positron range, noncollinearity, Compton redistribution or energy-window
+acceptance beyond first interaction. The numerical checks use synthetic
+data. Comparison with independent GATE or scanner data remains necessary
+for physical validation.
+
+Gravel et al. model position-dependent, anisotropic, asymmetric PSFs within
+PET reconstruction. Their study characterizes kernels on a limited-angle
+dual-panel scanner with simulated data and uses TOF DIRECT. This 2D
+implementation uses the same image-domain representation idea and fits
+kernels to first-interaction projection probabilities for rotating
+detectors. The paper's performance results apply to its own scanner and
+protocol.
+
+[Strul et al. (2003)](https://doi.org/10.1088/0031-9155/48/8/302)
+· [Iriarte et al. (2009)](https://doi.org/10.1088/0031-9155/54/7/004)
+· [Pratx and Levin (2011)](https://doi.org/10.1088/0031-9155/56/13/018)
+· [Gravel et al. (2019)](https://doi.org/10.1088/1361-6560/ab4914)

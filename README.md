@@ -236,6 +236,13 @@ gimntools_ui
 
 Optional MLEM/OSEM detector response models include DOI and spatially varying PSF, independently or combined. See the [detector response guide](docs/detector_response_geometry.md) for acquisition requirements and the GATE LUT format.
 
+Run `gimntools_ui` for the Tk interface. For the optional PySide6/VTK
+interface, install `python -m pip install -e '.[qt]'` from a source checkout
+and run `gimntools_qt`. Both build PETSYS and GATE sinograms, reconstruct
+volumes and generate analytical LUTs. The Qt interface loads acquisition
+geometry from JSON and displays axial, coronal and sagittal slices in VTK.
+Use Tk for profile management, calibration and the NEMA tools.
+
 GUI tabs support GATE and PETSYS input, sinogram visualization, EM/FBP
 reconstruction, orthogonal display, profile analysis and FWHM analysis.
 Loading or acquisition changes should be checked before exporting results.

@@ -780,6 +780,8 @@ class PetsysPanel(ttk.Frame):
         labeled_entry(t, "background scale (Tprompt/Tbg)", self.var_bg_scale, width=12)
         self.var_ndist = tk.IntVar(value=128)
         self.var_asigma = tk.DoubleVar(value=0.5)
+        self.var_sino_threads = tk.IntVar(value=0)
+        labeled_spin(t, "Threads (0 = auto)", self.var_sino_threads, 0, 16)
         labeled_spin(t, "n_dist_out", self.var_ndist, 16, 1024)
         labeled_spin(t, "angular_sigma", self.var_asigma, 0.0, 10.0, is_double=True)
         rown = ttk.Frame(t); rown.pack(fill=tk.X)
@@ -803,6 +805,7 @@ class PetsysPanel(ttk.Frame):
                         apply_corr=self.var_apply_corr.get(),
                         use_norm=self.var_gnorm.get(),
                         n_dist=self.var_ndist.get(),
+                        workers=self.var_sino_threads.get() or None,
                         angular_sigma=self.var_asigma.get(),
                         name=self.var_name.get())
             if not np.isfinite(spec['bg_scale']) or spec['bg_scale'] < 0:
@@ -825,7 +828,8 @@ class PetsysPanel(ttk.Frame):
             acquisition = {}
             sino, _ = coincidence_to_lor(spec['path'], cfg, angles_cfg, params,
                                          rsectors=rsec, verbose=True,
-                                         geometry_out=acquisition)
+                                         geometry_out=acquisition,
+                                         workers=spec['workers'])
             if spec['bg']:
                 acquisition['background'] = spec['bg']
                 acquisition['background_scale'] = spec['bg_scale']
@@ -834,7 +838,7 @@ class PetsysPanel(ttk.Frame):
                 if not os.path.isfile(spec['bg']):
                     raise FileNotFoundError(f"Background ROOT not found: {spec['bg']}")
                 bg, _ = coincidence_to_lor(spec['bg'], cfg, angles_cfg, params,
-                                            rsectors=rsec)
+                                            rsectors=rsec, workers=spec['workers'])
                 if bg.shape != sino.shape:
                     raise ValueError("background and prompt sinograms have different dimensions")
                 background = np.asarray(bg, float) * spec['bg_scale']
@@ -1276,7 +1280,8 @@ class ReconstructionPanel(ttk.Frame):
         )
         labeled_combo(response_box, "EM model", self.v["response_mode"],
                       ["Conventional", "Existing radial Gaussian", "DOI-aware",
-                       "Spatially variant PSF", "DOI + residual SV response"], width=24)
+                       "Spatially variant PSF", "DOI + residual SV response",
+                       "Analytical detector response"], width=24)
         radial = ttk.Frame(response_box)
         labeled_spin(radial, "PSF FWHM (mm)", self.v["fwhm"], 0.0, 30.0, is_double=True)
         doi = ttk.Frame(response_box)
@@ -1298,13 +1303,21 @@ class ReconstructionPanel(ttk.Frame):
             mode = self.v["response_mode"].get()
             if mode == "Existing radial Gaussian":
                 radial.pack(fill=tk.X)
-            if mode in ("DOI-aware", "DOI + residual SV response"):
+            if mode in ("DOI-aware", "DOI + residual SV response", "Analytical detector response"):
                 doi.pack(fill=tk.X)
             if mode in ("Spatially variant PSF", "DOI + residual SV response"):
                 sv.pack(fill=tk.X)
 
         self.v["response_mode"].trace_add("write", show_response_options)
         self.v["method"].trace_add("write", show_response_options)
+
+        def generate_analytical():
+            from Gimntools.GimnRec.ui.tk_analytical import open_generator
+            open_generator(self)
+
+        ttk.Button(response_box, text="Generate analytical LUT…",
+                   command=generate_analytical).pack(fill=tk.X)
+
 
         # ---- image grid: sinogram-driven (legacy) vs volume-driven --------
         gbox = ttk.LabelFrame(ctrl, text="Image grid", padding=6)
@@ -3307,6 +3320,9 @@ class ReconUI(tk.Tk):
                     self.petsys.var_cal.set(output)
                     self.log(f'[CAL] calibration saved: {output}')
                     messagebox.showinfo('Calibration', f'Calibration saved to:\n{output}')
+                elif kind == "analytical_lut_ready":
+                    from Gimntools.GimnRec.ui.tk_analytical import show_lut
+                    show_lut(self.recon_panel, *payload)
                 elif kind == 'reconstruction_ready':
                     self._publish_reconstruction(*payload)
                 elif kind == "sino_refresh":
@@ -3427,7 +3443,7 @@ class ReconUI(tk.Tk):
             psf, response = None, None
             mode = params["response_mode"].get() if "response_mode" in params else "Conventional"
             if method != "fbp":
-                use_doi = mode in ("DOI-aware", "DOI + residual SV response")
+                use_doi = mode in ("DOI-aware", "DOI + residual SV response", "Analytical detector response")
                 use_lut = mode in ("Spatially variant PSF", "DOI + residual SV response")
                 if use_doi or use_lut:
                     from Gimntools.GimnRec.detector_response import DetectorResponse, ResponseSettings
@@ -3445,10 +3461,12 @@ class ReconUI(tk.Tk):
                         face_width_mm=float(params["doi_face"].get()) if use_doi else None,
                         face_order=int(params["doi_face_order"].get()) if use_doi else 3,
                         depth_order=int(params["doi_depth_order"].get()) if use_doi else 3,
-                        lut_path=lut,
+                        lut_path=lut, analytical=mode == "Analytical detector response",
                     )
                     self.log(f"[{entry['name']}] {mode} (exploratory 2D model)")
                     response = DetectorResponse(r, angles, settings, entry.get("acquisition"))
+                    if norm is not None and response.reference_factors is not None:
+                        raise ValueError("Build the sinogram with geometric normalization disabled for an analytical LUT")
                 elif mode == "Existing radial Gaussian" or params["use_psf"].get():
                     psf = make_psf_kernel(float(params["fwhm"].get()), srange / sino.shape[1])
             em_options = {"response": response} if response is not None else {}

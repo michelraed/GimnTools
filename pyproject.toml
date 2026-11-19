@@ -31,11 +31,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "build>=1.0", "twine>=5.0"]
+qt = ["PySide6-Essentials>=6.6", "vtk>=9.3"]
 
 [project.scripts]
 reconstruct_petsys = "Gimntools.GimnRec.cli.reconstruct_petsys:main"
 reconstruct_gate = "Gimntools.GimnRec.cli.reconstruct_gate:main"
 gimntools_ui = "Gimntools.GimnRec.ui.app:main"
+gimntools_qt = "Gimntools.GimnRec.ui:qt_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

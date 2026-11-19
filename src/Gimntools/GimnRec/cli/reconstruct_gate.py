@@ -283,6 +283,8 @@ def main(argv=None):
         from Gimntools.GimnRec.detector_response import DetectorResponse
         em_rec = siddon_reconstructor(sino, **grid_kw)
         response = DetectorResponse(em_rec, angles, detector_response, acquisition)
+        if args.geom_norm and response.reference_factors is not None:
+            build_parser().error("--geom-norm duplicates acceptance already calculated by the analytical LUT")
     em_options = {"response": response} if response is not None else {}
     recs = {}
     geom = None

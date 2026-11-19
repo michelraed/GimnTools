@@ -270,6 +270,7 @@ def test_gui_build_then_reconstruct_with_combined_response(tmp_path, monkeypatch
         app.petsys.cfg_form._populate(cfg)
         app.petsys.angles.set_data(detector_angles, mapping)
         app.petsys.var_meas.set(str(root))
+        app.petsys.var_sino_threads.set(2)
         app.petsys._build_async()
         assert not errors, errors
         panel = app.recon_panel
@@ -289,3 +290,189 @@ def test_gui_build_then_reconstruct_with_combined_response(tmp_path, monkeypatch
         assert model["lut"]["doi_included"] is False
     finally:
         app.destroy()
+
+
+def test_petsys_parallel_batches_preserve_counts_and_event_order(tmp_path):
+    path = tmp_path / "parallel.root"
+    repeat = 25_000
+    size = repeat * 4
+    zeros = np.zeros(size)
+    with uproot.recreate(path) as root:
+        root.mktree("tomographicCoincidences", dict(
+            SiPMPosX_1=zeros, SiPMPosY_1=zeros, SiPMPosX_2=zeros, SiPMPosY_2=zeros,
+            chipID_1=np.tile([4, 4, 99, 4], repeat),
+            chipID_2=np.full(size, 29),
+            energyCorrected_1=np.tile([511, 511, 511, 300], repeat),
+            energyCorrected_2=np.full(size, 511),
+            angleGantry_1=np.tile([0, 30, 0, 0], repeat),
+            slice_1=np.tile([3, 4, 3, 3], repeat),
+        ))
+    cfg, _, mapping = setup_geometry("PETSYS")
+    angles = {"left": 0, "right": 180}
+    args = (path, cfg, angles, get_default_parameters("PETSYS"))
+    single, single_events = coincidence_to_lor(*args, rsectors=mapping, workers=1)
+    parallel, parallel_events = coincidence_to_lor(*args, rsectors=mapping, workers=4)
+    np.testing.assert_array_equal(single, parallel)
+    np.testing.assert_array_equal(single_events, parallel_events)
+    np.testing.assert_array_equal(parallel_events["slice"], np.tile([3, 4], repeat))
+    assert parallel[3, 3, 21] == parallel[4, 3, 28] == repeat
+    assert parallel.sum() == 2 * repeat
+
+
+def write_aligned_gimnroot(path, *, invalid=False):
+    from Gimntools.GimnRec.detector_response import _GIMNROOT_PIXELS
+
+    run, left, right = np.indices((6, 64, 64)).reshape(3, -1)
+    i1, j1 = _GIMNROOT_PIXELS[left].T
+    i2, j2 = _GIMNROOT_PIXELS[right].T
+    offsets = np.array([[0.7, -0.4], [-0.35, 0.22]])
+    x1 = ((j1 - 3.5) * 3.36 + offsets[0, 0]).astype(np.float32)
+    y1 = ((3.5 - i1) * 3.36 + offsets[0, 1]).astype(np.float32)
+    x2 = ((j2 - 3.5) * 3.36 + offsets[1, 0]).astype(np.float32)
+    y2 = ((3.5 - i2) * 3.36 + offsets[1, 1]).astype(np.float32)
+    if invalid:
+        i1 = i1.copy()
+        i1[0] = (i1[0] + 1) % 8
+    with uproot.recreate(path) as root:
+        root.mktree("tomographicCoincidences", dict(
+            SiPMPosX_1=x1, SiPMPosY_1=y1, SiPMPosX_2=x2, SiPMPosY_2=y2,
+            chipID_1=np.full(run.size, 4), chipID_2=np.full(run.size, 29),
+            channelID_1=left, channelID_2=right,
+            posI_1=i1, posI_2=i2, posJ_1=j2, posJ_2=j2,  # upstream writer bug
+            energyCorrected_1=np.full(run.size, 511.0),
+            energyCorrected_2=np.full(run.size, 511.0),
+            angleGantry_1=run * 30.0, slice_1=j1 + j2,
+        ))
+    return offsets
+
+
+@pytest.mark.parametrize("encoder_rotation", [0, 90])
+def test_aligned_gimnroot_keeps_measured_bins_and_matched_doi(tmp_path, encoder_rotation):
+    path = tmp_path / "aligned.root"
+    offsets = write_aligned_gimnroot(path)
+    cfg, angles, mapping = setup_geometry("PETSYS")
+    cfg.update(sipm_pixel_n=[8, 8], crystal_size=[20, 26.88, 26.88],
+               sino_range_mm=26.88, det_z_rotation=encoder_rotation)
+    geometry = {}
+    args = (path, cfg, angles, get_default_parameters("PETSYS"))
+    sino, events = coincidence_to_lor(*args, rsectors=mapping, geometry_out=geometry)
+    conventional, _ = coincidence_to_lor(*args, rsectors=mapping)
+    np.testing.assert_array_equal(sino, conventional)
+    np.testing.assert_allclose([geometry["petsys_bin_offsets_mm"][head] for head in ("left", "right")],
+                               offsets, atol=2e-6)
+    assert len(events) == 6 * 64**2
+    rec = siddon_reconstructor(sino, fov_mm=26.88, n_img=18, verbose=False)
+    theta = angle_centers(rec)
+    with pytest.warns(UserWarning, match="nominal crystal-pair"):
+        model = DetectorResponse(rec, theta, ResponseSettings(0.08, 3), geometry)
+    measured = sino.sum(axis=0) > 0
+    covered = model.doi.getnnz(axis=1).reshape(measured.shape) > 0
+    assert np.all(covered[measured])
+    forward, back = model.operators()
+    rng = np.random.default_rng(23)
+    x = rng.random((18, 18))
+    y = rng.random(measured.shape)
+    assert np.vdot(forward(x), y) == pytest.approx(np.vdot(x, back(y)), rel=1e-12)
+    assert np.all(back(np.ones_like(y)) >= 0)
+
+
+def test_gimnroot_alignment_rejects_wrong_trusted_index(tmp_path):
+    path = tmp_path / "bad.root"
+    write_aligned_gimnroot(path, invalid=True)
+    cfg, angles, mapping = setup_geometry("PETSYS")
+    cfg.update(sipm_pixel_n=[8, 8], crystal_size=[20, 26.88, 26.88], sino_range_mm=26.88)
+    geometry = {}
+    sino, _ = coincidence_to_lor(path, cfg, angles, get_default_parameters("PETSYS"),
+                                rsectors=mapping, geometry_out=geometry)
+    rec = siddon_reconstructor(sino, fov_mm=26.88, n_img=18, verbose=False)
+    with pytest.raises(ValueError, match="1 invalid channel/index hit"):
+        DetectorResponse(rec, angle_centers(rec), ResponseSettings(0.08, 3), geometry)
+
+
+def test_analytical_path_includes_preceding_segments_and_side_exit():
+    from Gimntools.GimnRec.detector_response import _scintillator_path
+
+    # Along the normal only the struck crystal contributes.
+    normal = _scintillator_path(10.0, 0.0, np.ones(1), np.zeros(1), [0.0, -4.0], 3.0)
+    np.testing.assert_allclose(normal, [10.0])
+    # At 45 degrees the ray crosses the target and its neighboring crystal,
+    # with a 1 mm transverse gap between the two.
+    cosine = np.sqrt(0.5)
+    ray = np.array([cosine])
+    oblique = _scintillator_path(5.0, 0.0, ray, ray, [0.0, -4.0], 3.0)
+    np.testing.assert_allclose(oblique, [(1.5 + 2.5) / cosine])
+
+
+def test_analytical_probability_and_saved_lut(tmp_path):
+    from Gimntools.GimnRec.analytical_response import (
+        analytical_projection_matrix, generate_analytical_lut,
+    )
+
+    recon = make_recon()
+    angles = angle_centers(recon)
+    cfg, det, mapping = setup_geometry("PETSYS")
+    geometry = acquisition_geometry("synthetic", cfg, det, mapping, "y", -np.arange(6)*30)
+    settings = ResponseSettings(0.08, 3, face_order=4, depth_order=4)
+    matrix = analytical_projection_matrix(recon, angles, settings, geometry)
+    efficiency = np.asarray(matrix.sum(axis=0)).ravel()
+    assert np.all((efficiency > 0) & (efficiency < 1))
+    assert np.ptp(efficiency) > 0
+    np.testing.assert_allclose(efficiency, efficiency[::-1], atol=1e-12)
+    rng = np.random.default_rng(1)
+    x, y = rng.random(matrix.shape[1]), rng.random(matrix.shape[0])
+    assert np.dot(matrix @ x, y) == pytest.approx(np.dot(x, matrix.T @ y), rel=1e-12)
+    path = tmp_path / "analytic.npz"
+    exported = generate_analytical_lut(recon, angles, settings, geometry, path,
+                                     sample_count=2, half_support=1, fit_tolerance=1)
+    assert exported["kernels"].shape == (2, 2, 3, 3)
+    assert np.all(exported["kernels"] >= 0)
+    np.testing.assert_allclose(exported["kernels"].sum(axis=(2, 3)), 1)
+    assert np.all(exported["fit_scale"] > 0)
+    assert exported["relative_error"].max() < 1
+    with np.load(path, allow_pickle=False) as lut:
+        assert lut["doi_included"].item() is True
+    with pytest.warns(UserWarning, match="SV-PSF"):
+        response = DetectorResponse(recon, angles, ResponseSettings(lut_path=str(path)))
+    assert response.sv.nnz > 0
+    assert np.any(response.reference_factors == 0)
+    for subset in (None, np.arange(0, recon.n_ang, 2)):
+        predict, transpose = response.operators(subset)
+        image = x.reshape(recon.n_img, recon.n_img)
+        sino = y.reshape(recon.n_dist, recon.n_ang)
+        if subset is not None:
+            sino = sino[:, subset]
+        assert np.vdot(predict(image), sino) == pytest.approx(
+            np.vdot(image, transpose(sino)), rel=1e-12)
+    wrong_grid = make_recon(dx_cor_mm=1)
+    with pytest.raises(ValueError, match="must match"):
+        DetectorResponse(wrong_grid, angles, ResponseSettings(lut_path=str(path)))
+    cfg["radius"] += 3
+    different_detector = acquisition_geometry("different", cfg, det, mapping, "y", -np.arange(6)*30)
+    with pytest.raises(ValueError, match="original detector"):
+        DetectorResponse(recon, angles, ResponseSettings(lut_path=str(path)), different_detector)
+
+
+def test_aligned_binning_preserves_physical_sensitivity(tmp_path):
+    path = tmp_path / "aligned.root"
+    write_aligned_gimnroot(path)
+    cfg, angles, mapping = setup_geometry("PETSYS")
+    cfg.update(sipm_pixel_n=[8, 8], crystal_size=[20, 26.88, 26.88], sino_range_mm=26.88)
+    geometry = {}
+    sino, _ = coincidence_to_lor(path, cfg, angles, get_default_parameters("PETSYS"),
+                                rsectors=mapping, geometry_out=geometry)
+    recon = siddon_reconstructor(sino, fov_mm=26.88, n_img=18, verbose=False)
+    theta = angle_centers(recon)
+    unaligned = {key: value for key, value in geometry.items() if key != "petsys_bin_centers_mm"}
+    settings = ResponseSettings(0.08, 3, analytical=True)
+    aligned = DetectorResponse(recon, theta, settings, geometry)
+    nominal = DetectorResponse(recon, theta, settings, unaligned)
+    assert aligned.doi.shape == nominal.doi.shape
+    assert (aligned.doi != nominal.doi).nnz > 0
+    np.testing.assert_allclose(aligned.doi.sum(axis=0), nominal.doi.sum(axis=0), atol=1e-12)
+
+
+def test_upstream_channel_indices_are_not_sequential():
+    from Gimntools.GimnRec.detector_response import _GIMNROOT_PIXELS
+
+    np.testing.assert_array_equal(_GIMNROOT_PIXELS[[0, 16, 60]], [[1, 7], [6, 6], [0, 0]])
+    assert np.unique(_GIMNROOT_PIXELS, axis=0).shape == (64, 2)

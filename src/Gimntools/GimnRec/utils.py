@@ -7,8 +7,12 @@ Main entry points:
     (Portuguese alias kept: :func:`salvar_reconstrucoes`).
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from operator import index
+
 from scipy.spatial.transform import Rotation as ROT
-from Gimntools.GimnRec.systemSpace import systemSpace
+from Gimntools.GimnRec.systemSpace import DetectorReference, systemSpace
 from Gimntools.GimnRec.sinogramer import convert_crystal_to_xy
 import numpy as np
 import pandas as pd
@@ -44,13 +48,116 @@ def _resolve_axes(detector_config):
     return ra, slice_axis_index
 
 
+
+def _petsys_chunk(start, *, data, space, rsectors, local_rotation, origin,
+                  plane, energy_range, radial_half, chunk_size):
+    block = slice(start, start + chunk_size)
+    chips = [data[f"chipID_{hit}"][block] for hit in (1, 2)]
+    energies = [data[f"energyCorrected_{hit}"][block] for hit in (1, 2)]
+    e_min, e_max = energy_range
+    reject = ((energies[0] < e_min) | (energies[0] > e_max)
+              | (energies[1] < e_min) | (energies[1] > e_max))
+    mapped_chips = list(rsectors)
+    accepted = ~reject & np.isin(chips[0], mapped_chips) & np.isin(chips[1], mapped_chips)
+
+    gantry_angle = data["angleGantry_1"][block][accepted]
+    points = []
+    if gantry_angle.size:
+        gantry = ROT.from_euler(space.rotate_along, -gantry_angle[:, None], degrees=True)
+        for hit, ids in enumerate(chips, 1):
+            ids = ids[accepted]
+            coords = np.column_stack((data[f"SiPMPosX_{hit}"][block][accepted],
+                                      data[f"SiPMPosY_{hit}"][block][accepted],
+                                      np.zeros(ids.size)))
+            coords = local_rotation.apply(coords)[:, ::-1] + origin
+            for chip in np.unique(ids):
+                group = ids == chip
+                coords[group] = space.detectors[rsectors[chip]].apply(coords[group])
+            points.append(gantry.apply(coords)[:, plane])
+
+    if not points:
+        return np.empty(0), np.empty(0), np.empty(0, dtype=int), np.empty(0, dtype=int)
+    p1, p2 = points
+    du, dv = (p2 - p1).T
+    midpoint = 0.5 * (p1 + p2)
+    phi = np.arctan2(du, -dv) % np.pi
+    distance = midpoint[:, 0] * np.cos(phi) + midpoint[:, 1] * np.sin(phi)
+    angle = np.rad2deg(phi)
+    degenerate = (du == 0) & (dv == 0)
+    distance[degenerate] = angle[degenerate] = np.nan
+    axial = data["slice_1"][block][accepted]
+    if not np.issubdtype(axial.dtype, np.integer):
+        # Preserve truncation toward zero and the scalar reader's error on non-finite slices.
+        if np.all(np.isfinite(axial) & (axial >= -2.0**63) & (axial < 2.0**63)):
+            axial = axial.astype(np.int64)
+        else:
+            axial = np.asarray([int(value) for value in axial])
+
+    nz, nr, na = space.sinogram.shape
+    radial = np.floor(((distance + radial_half) / (2.0 * radial_half)) * nr)
+    angular = np.floor((angle / 180.0) * na)
+    valid = ((axial >= 0) & (axial < nz) & (radial >= 0) & (radial < nr)
+             & (angular >= 0) & (angular < na))
+    bins = ((axial[valid].astype(np.intp) * nr + radial[valid].astype(np.intp)) * na
+            + angular[valid].astype(np.intp))
+    return distance, angle, axial, bins
+
+
+def _petsys_sinogram(data, space, config, rsectors, workers):
+    total = len(data["SiPMPosX_1"])
+    if workers is None:
+        # On smaller files the extra batch scheduling can cost more than it saves.
+        workers = min(2, os.cpu_count() or 1) if total >= 1_000_000 else 1
+    workers = index(workers)
+    if workers < 1:
+        raise ValueError("workers must be a positive integer")
+
+    chunk_size = 32_768
+    starts = range(0, total, chunk_size)
+    processor = partial(
+        _petsys_chunk, data=data, space=space,
+        rsectors={chip: name for chip, name in rsectors.items() if name is not None},
+        local_rotation=ROT.from_euler("z", config["det_z_rotation"], degrees=True),
+        origin=DetectorReference(np.zeros(3), config["crystal_size"],
+                                 config["pla_thickness"], config["radius"]),
+        plane=space._PLANE_AXES[space.rotate_along],
+        energy_range=(config["e_min"], config["e_max"]),
+        radial_half=float(config.get("sino_range_mm", config["crystal_size"][1])) / 2,
+        chunk_size=chunk_size,
+    )
+    sino = space.get_sinogram()
+    columns = {"distance": [], "angle": [], "slice": []}
+
+    def collect(results):
+        for distance, angle, axial, bins in results:
+            # Only this thread updates the histogram. Workers handle geometry.
+            np.add.at(sino.ravel(), bins, 1)
+            if distance.size:
+                for key, values in zip(columns, (distance, angle, axial)):
+                    columns[key].append(values)
+
+    if workers > 1 and len(starts) > 1:
+        with ThreadPoolExecutor(max_workers=min(workers, len(starts))) as executor:
+            collect(executor.map(processor, starts))
+    else:
+        collect(map(processor, starts))
+    events = pd.DataFrame({key: np.concatenate(parts) if parts else []
+                           for key, parts in columns.items()})
+    return sino, events
+
+
 def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
                        matrix=[128,128,128], rsectors={0:"detector-1",1:"detector-2"},
-                       first_rotation=None, verbose=False, *, geometry_out=None):
+                       first_rotation=None, verbose=False, *, geometry_out=None, workers=None):
     """Build the (slice, distance, angle) sinogram from a ROOT file.
 
     Parameters
     ----------
+    workers : int or None
+        PETSYS geometry worker count. None selects one worker for small
+        acquisitions and up to two for acquisitions with at least one million
+        events. One worker processes vectorized batches on the caller thread.
+        GATE is serial.
     geometry_out : dict or None
         If provided, receives a snapshot of the geometry and raw acquisition
         poses for optional detector response modeling.
@@ -137,11 +244,16 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
         return PETSYS.get_sinogram(), pd.DataFrame(df)
 
     elif detector_config["data_from"] == "PETSYS":
-        e_min=detector_config.get("e_min",450.0); e_max=detector_config.get("e_max",650.0)
-        Rz = ROT.from_euler('z', detector_config.get("det_z_rotation",90.0), degrees=True)
-        # rotate_along was already resolved/normalized above (lowercase).
-        f = up.open(file_name)
-        co = f['tomographicCoincidences'].arrays(parameters, library='np')
+        with up.open(file_name) as root:
+            tree = root["tomographicCoincidences"]
+            branches = parameters
+            if geometry_out is not None:
+                from Gimntools.GimnRec.detector_response import PETSYS_ID_BRANCHES
+                available = set(tree.keys())
+                branches = list(dict.fromkeys([*parameters, *(
+                    name for name in PETSYS_ID_BRANCHES if name in available
+                )]))
+            co = tree.arrays(branches, library="np")
         if geometry_out is not None:
             from Gimntools.GimnRec.detector_response import (
                 acquisition_geometry, check_petsys_lattice,
@@ -153,24 +265,7 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
             geometry_out.update(check_petsys_lattice(co, detector_config, rsectors))
         ev_n = co['SiPMPosX_1'].shape[0]
         print(f"PETSYS: {ev_n} events — {os.path.basename(file_name)}")
-        df={'distance':[],'angle':[],'slice':[]}; prev_a=None
-        for e in range(ev_n):
-            en1,en2=co["energyCorrected_1"][e],co["energyCorrected_2"][e]
-            if en1<e_min or en1>e_max or en2<e_min or en2>e_max: continue
-            ga=co["angleGantry_1"][e]
-            if prev_a is None or ga!=prev_a: PETSYS.rotateBy(-ga); prev_a=ga
-            c1,c2=co["chipID_1"][e],co["chipID_2"][e]
-            d1n=rsectors.get(c1); d2n=rsectors.get(c2)
-            if d1n is None or d2n is None: continue
-            ev1=Rz.apply(np.asarray([co["SiPMPosX_1"][e],co["SiPMPosY_1"][e],0.0]))
-            ev2=Rz.apply(np.asarray([co["SiPMPosX_2"][e],co["SiPMPosY_2"][e],0.0]))
-            p1=PETSYS.getGlobalPreRotation(ev1,d1n); p2=PETSYS.getGlobalPreRotation(ev2,d2n)
-            g1=PETSYS.getGlobalRotation(p1); g2=PETSYS.getGlobalRotation(p2)
-            dist,ang=PETSYS.global_to_sinogram(g1,g2,rotate_along)
-            sz=int(co["slice_1"][e])
-            df['distance'].append(dist); df['angle'].append(ang); df['slice'].append(sz)
-            PETSYS.fill_sino(dist,ang,sz)
-        sino=PETSYS.get_sinogram(); df=pd.DataFrame(df)
+        sino, df = _petsys_sinogram(co, PETSYS, detector_config, rsectors, workers)
         print(f"  Sino: {sino.shape}, max={sino.max():.0f}, LORs={len(df)}")
         return sino, df
     else:

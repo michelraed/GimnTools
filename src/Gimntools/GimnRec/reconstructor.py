@@ -637,16 +637,21 @@ class siddon_reconstructor:
         return operators
 
     def _validate_response_support(self, response, norm, background):
-        if response is None or response.doi is None:
+        if response is None:
             return
-        supported = np.asarray(response.doi.getnnz(axis=1)).reshape(norm.shape) > 0
+        if response.doi is not None:
+            supported = np.asarray(response.doi.getnnz(axis=1)).reshape(norm.shape) > 0
+        elif response.reference_factors is not None:
+            supported = response.reference_factors > 0
+        else:
+            return
         if not np.all(supported) and np.any(
             (self.sinogram[:, ~supported] > 0) & (background[:, ~supported] == 0)
             & (norm[~supported] > 0)
         ):
             raise ValueError(
-                "DOI geometry has no modeled response for some measured bins. Check PETSYS "
-                "segment-center encoding, geometry, acquisition angles and image FOV"
+                "Detector geometry has no modeled response for some measured bins. Check "
+                "the segment encoding, acquisition angles and image FOV"
             )
 
     def mlem(self, angles_deg, iterations=80, psf_kernel=None,

@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import warnings
@@ -25,6 +26,7 @@ class ResponseSettings:
     face_order: int = 3
     depth_order: int = 3
     lut_path: str | None = None
+    analytical: bool = False
 
 
 def acquisition_geometry(path, config, detector_angles, rsectors, first_rotation,
@@ -45,6 +47,36 @@ def _transverse_is_x(axis, rotation):
     return (axis == "y") != (round(rotation / 90) % 2 == 1)
 
 
+# GimnROOT SiPM::CorrectChannelToPixelPs returns (row I, column J).
+# Source: GimnROOT 31b862f, source/2-histograms/SiPM.C.
+_GIMNROOT_PIXELS = np.array([
+    (1, 7), (1, 6), (2, 4), (0, 6), (0, 5), (3, 7), (0, 4), (2, 6),
+    (1, 5), (3, 3), (0, 7), (3, 4), (3, 6), (2, 5), (2, 7), (1, 4),
+    (6, 6), (7, 7), (6, 7), (7, 6), (4, 7), (4, 6), (5, 6), (5, 7),
+    (7, 4), (7, 5), (6, 4), (3, 5), (6, 5), (5, 5), (5, 4), (4, 4),
+    (4, 5), (4, 3), (4, 2), (5, 2), (5, 3), (6, 2), (3, 2), (6, 3),
+    (7, 2), (7, 3), (4, 0), (4, 1), (5, 0), (6, 1), (5, 1), (6, 0),
+    (7, 0), (7, 1), (0, 3), (3, 0), (3, 1), (2, 1), (2, 0), (1, 0),
+    (1, 1), (0, 2), (2, 2), (1, 3), (0, 0), (1, 2), (2, 3), (0, 1),
+])
+PETSYS_ID_BRANCHES = ("channelID_1", "channelID_2", "posI_1", "posI_2", "posJ_2")
+
+
+def _gimnroot_offsets(data, block, hit, valid, pitches):
+    # posJ_1 in older GimnROOT files is copied from the second hit.
+    channels = data[f"channelID_{hit}"][block][valid]
+    good = np.isfinite(channels) & (channels >= 0) & (channels < 64) & (channels == np.floor(channels))
+    pixels = _GIMNROOT_PIXELS[np.where(good, channels, 0).astype(int)]
+    for key, column in ((f"posI_{hit}", 0), ("posJ_2", 1)):
+        if key in data and (column == 0 or hit == 2):
+            good &= data[key][block][valid] == pixels[:, column]
+    centers = (pixels[:, ::-1] - 3.5) * (pitches * [1, -1])
+    measured = np.column_stack([data[f"SiPMPos{axis}_{hit}"][block][valid] for axis in "XY"])
+    offsets = measured - centers
+    good &= np.isfinite(offsets).all(axis=1)
+    return offsets, good, pixels, measured
+
+
 def check_petsys_lattice(data, config, rsectors):
     """Check the nominal transverse crystal encoding for accepted ROOT hits."""
     axis = config.get("rotate_along", "y").lower()
@@ -56,26 +88,89 @@ def check_petsys_lattice(data, config, rsectors):
     coordinate = "SiPMPosX" if is_x else "SiPMPosY"
     n = config["sipm_pixel_n"][0 if is_x else 1]
     pitch = config["sipm_pitch"][0 if is_x else 1]
-    chip_ids = list(rsectors)
-    off_lattice = same_head = 0
+    chip_ids = [chip for chip, head in rsectors.items() if head is not None]
+    heads = {rsectors[chip] for chip in chip_ids}
+    pitches = np.asarray(config["sipm_pitch"], dtype=float)
+    has_ids = (list(config["sipm_pixel_n"]) == [8, 8]
+               and all(key in data for key in PETSYS_ID_BRANCHES[:2]))
+    bounds = {}
+    center_bounds = {}
+    axis_index = 0 if is_x else 1
+    off_lattice = same_head = invalid_ids = 0
     for first in range(0, len(data[f"{coordinate}_1"]), 100_000):
         block = slice(first, first + 100_000)
-        chip1, chip2 = data["chipID_1"][block], data["chipID_2"][block]
-        e1, e2 = data["energyCorrected_1"][block], data["energyCorrected_2"][block]
-        valid = ((e1 >= config["e_min"]) & (e1 <= config["e_max"])
-                 & (e2 >= config["e_min"]) & (e2 <= config["e_max"])
-                 & np.isin(chip1, chip_ids) & np.isin(chip2, chip_ids))
+        chips = [data[f"chipID_{hit}"][block] for hit in (1, 2)]
+        e1, e2 = (data[f"energyCorrected_{hit}"][block] for hit in (1, 2))
+        valid = (~((e1 < config["e_min"]) | (e1 > config["e_max"])
+                   | (e2 < config["e_min"]) | (e2 > config["e_max"]))
+                 & np.isin(chips[0], chip_ids) & np.isin(chips[1], chip_ids))
         bad = np.zeros(valid.shape, dtype=bool)
-        for hit in (1, 2):
-            index = data[f"{coordinate}_{hit}"][block] / pitch + (n - 1) / 2
-            nearest = np.rint(index)
-            bad |= (~np.isfinite(index) | (np.abs(index - nearest) > 0.01)
-                    | (nearest < 0) | (nearest >= n))
+        for hit, ids in enumerate(chips, 1):
+            if has_ids:
+                offsets, good, pixels, measured = _gimnroot_offsets(data, block, hit, valid, pitches)
+                invalid_ids += int(np.count_nonzero(~good))
+                used_chips = ids[valid][good]
+                for chip in np.unique(used_chips):
+                    group = used_chips == chip
+                    points = offsets[good][group]
+                    low, high = bounds.get(int(chip), (np.inf, -np.inf))
+                    bounds[int(chip)] = (np.minimum(low, points.min(axis=0)),
+                                         np.maximum(high, points.max(axis=0)))
+                    minima, maxima = center_bounds.setdefault(
+                        rsectors[chip], (np.full(n, np.inf), np.full(n, -np.inf)))
+                    indices = pixels[good][group, 1 - axis_index]
+                    coordinates = measured[good][group, axis_index]
+                    np.minimum.at(minima, indices, coordinates)
+                    np.maximum.at(maxima, indices, coordinates)
+            else:
+                index = data[f"{coordinate}_{hit}"][block] / pitch + (n - 1) / 2
+                nearest = np.rint(index)
+                bad |= (~np.isfinite(index) | (np.abs(index - nearest) > 0.01)
+                        | (nearest < 0) | (nearest >= n))
         off_lattice += int(np.count_nonzero(valid & bad))
-        for head in set(rsectors.values()):
-            ids = [key for key in rsectors if rsectors[key] == head]
-            same_head += int(np.count_nonzero(valid & np.isin(chip1, ids) & np.isin(chip2, ids)))
-    return dict(petsys_off_lattice_events=off_lattice, petsys_same_head_events=same_head)
+        for head in heads:
+            ids = [chip for chip in chip_ids if rsectors[chip] == head]
+            same_head += int(np.count_nonzero(valid & np.isin(chips[0], ids) & np.isin(chips[1], ids)))
+
+    result = dict(petsys_off_lattice_events=off_lattice, petsys_same_head_events=same_head)
+    if has_ids:
+        offsets_by_head = {}
+        ambiguous = [
+            chip for chip, (low, high) in bounds.items()
+            if np.any(high - low > 0.02 * pitches)
+        ]
+        missing = set(chip_ids) - bounds.keys()
+        for chip, (low, high) in bounds.items():
+            head = rsectors[chip]
+            offset = (low + high) / 2
+            previous = offsets_by_head.setdefault(head, offset)
+            if not np.allclose(offset, previous, rtol=0, atol=0.01 * pitches):
+                ambiguous.append(chip)
+        # One encoded center per pixel is required. Float32 ROOT serialization
+        # can round coordinates, but it cannot explain a varying calibration.
+        variable = []
+        raw_centers = (np.arange(n) - (n - 1) / 2) * pitch * (1 if is_x else -1)
+        measured_centers = {}
+        for head, (low, high) in center_bounds.items():
+            observed = np.isfinite(low)
+            if np.any(high[observed] - low[observed] >
+                      8 * np.spacing(np.maximum(1, np.abs(low[observed])).astype(np.float32))):
+                variable.append(head)
+            centers = raw_centers + offsets_by_head[head][axis_index]
+            centers[observed] = (low[observed] + high[observed]) / 2
+            measured_centers[head] = centers.tolist()
+        if invalid_ids or ambiguous or missing or variable:
+            result["petsys_alignment_error"] = (
+                f"{invalid_ids} invalid channel/index hits, inconsistent translations for chips "
+                f"{sorted(set(ambiguous))}, no accepted hits for chips {sorted(missing)}, "
+                f"variable encoded centers on heads {sorted(variable)}"
+            )
+        else:
+            result["petsys_bin_offsets_mm"] = {
+                head: offset.tolist() for head, offset in offsets_by_head.items()
+            }
+            result["petsys_bin_centers_mm"] = measured_centers
+    return result
 
 
 @njit
@@ -100,7 +195,7 @@ def _bins_at_coordinate(coordinate):
         yield int(np.floor(coordinate)), 1.0
 
 
-def _nominal_pairs(acquisition, sino_shape, sino_range, face_width):
+def _nominal_pairs(acquisition, sino_shape, sino_range, face_width, *, analytic_grid=None):
     """Enumerate transverse crystal pairs, including zero-count measurements."""
     from Gimntools.GimnRec.sinogramer import Sinogramer
     from Gimntools.GimnRec.systemSpace import systemSpace
@@ -119,6 +214,8 @@ def _nominal_pairs(acquisition, sino_shape, sino_range, face_width):
         rtol=0, atol=1e-6,
     ):
         raise ValueError("DOI requires opposing detector orientations")
+    if acquisition.get("petsys_alignment_error"):
+        raise ValueError("Cannot verify GimnROOT channel alignment: " + acquisition["petsys_alignment_error"])
     if acquisition.get("petsys_off_lattice_events", 0) or acquisition.get("petsys_same_head_events", 0):
         raise ValueError(
             "PETSYS DOI requires opposite-head coincidences and transverse SiPM hit positions "
@@ -160,19 +257,47 @@ def _nominal_pairs(acquisition, sino_shape, sino_range, face_width):
     local_normal = np.array([1.0, 0.0, 0.0])
     front = cfg["radius"] + cfg["pla_thickness"]
     n_dist, n_ang = sino_shape
+    exposure = np.asarray(acquisition.get("pose_exposure", np.ones(poses.size)), dtype=float)
+    if analytic_grid is not None:
+        if (exposure.shape != poses.shape or not np.isfinite(exposure).all()
+                or np.any(exposure < 0) or not np.isfinite(exposure.sum()) or exposure.sum() <= 0):
+            raise ValueError("Analytical response requires a nonnegative exposure weight per sorted pose")
+        exposure = exposure / exposure.sum()
     rows = {}
-    for pose in poses:
+    measured_centers = acquisition.get("petsys_bin_centers_mm")
+    if measured_centers is not None:
+        from scipy.spatial.transform import Rotation
+        local_rotation = Rotation.from_euler("z", rotation, degrees=True)
+        raw_axis = np.eye(3)[0 if transverse_is_x else 1]
+
+        def local_centers(coordinates):
+            return local_rotation.apply(np.asarray(coordinates)[:, None] * raw_axis)[:, ::-1]
+
+        physical_local = local_centers(centers)
+        measured_local = [local_centers(measured_centers[name]) for name in heads]
+    else:
+        physical_local = np.asarray(centers)[:, None] * local_tangent
+        measured_local = [physical_local] * 2
+    local_offsets = physical_local @ local_tangent
+    for pose, dwell in zip(poses, exposure if analytic_grid is not None else np.ones(poses.size)):
         space.rotateBy(float(pose))
         rotations = [space.global_rot * space.detectors[name] for name in heads]
         normals = [rot.apply(local_normal)[plane] for rot in rotations]
         tangents = [rot.apply(local_tangent)[plane] for rot in rotations]
         endpoints = [
-            rot.apply(front * local_normal + np.asarray(centers)[:, None] * local_tangent)
-            for rot in rotations
+            rot.apply(front * local_normal + physical_local) for rot in rotations
         ]
-        for p1 in endpoints[0]:
-            for p2 in endpoints[1]:
-                r, phi = space.global_to_sinogram(p1, p2, axis)
+        bin_endpoints = endpoints if measured_centers is None else [
+            rot.apply(front * local_normal + local)
+            for rot, local in zip(rotations, measured_local)
+        ]
+        if analytic_grid is not None and any(
+            analytic_grid / 2 * np.abs(normal).sum() >= front for normal in normals
+        ):
+            raise ValueError("Analytical response requires the image field to lie between both detector faces")
+        for i, (p1, measured1) in enumerate(zip(endpoints[0], bin_endpoints[0])):
+            for j, (p2, measured2) in enumerate(zip(endpoints[1], bin_endpoints[1])):
+                r, phi = space.global_to_sinogram(measured1, measured2, axis)
                 for angular, wa in _bins_at_coordinate(phi / 180 * n_ang):
                     # Across the angular seam the radial coordinate changes sign.
                     raw_r = -r if angular < 0 or angular >= n_ang else r
@@ -180,14 +305,35 @@ def _nominal_pairs(acquisition, sino_shape, sino_range, face_width):
                     for radial, wr in _bins_at_coordinate(coord):
                         if 0 <= radial < n_dist:
                             row = radial * n_ang + (angular % n_ang)
+                            segments = None
+                            if analytic_grid is not None:
+                                segments = (local_offsets - local_offsets[i],
+                                            local_offsets - local_offsets[j])
                             rows.setdefault(row, []).append(
-                                (p1[plane], p2[plane], normals, tangents, phi, wa * wr))
+                                (p1[plane], p2[plane], normals, tangents, segments,
+                                 phi, wa * wr * dwell))
     return rows, depth
+
+
+def _scintillator_path(depth, offset, cosine, tangent, segments, width):
+    """Length in this head from the slab entrance to the interaction point."""
+    limit = depth / cosine
+    path = np.zeros_like(limit)
+    transverse = np.abs(tangent) > 1e-14
+    denominator = np.where(transverse, tangent, 1.0)
+    for center in segments:
+        enter = (offset - center - width / 2) / denominator
+        leave = (offset - center + width / 2) / denominator
+        chord = np.maximum(0, np.minimum(limit, np.maximum(enter, leave))
+                           - np.maximum(0, np.minimum(enter, leave)))
+        within = np.abs(offset - center) <= width / 2
+        path += np.where(transverse, chord, np.where(within, limit, 0.0))
+    return path
 
 
 def _pair_rays(pair, offsets, face_weights, depths, depth_weights, mu, width):
     """Integrate interaction points, testing front-face entry for both photons."""
-    p1, p2, normals, tangents, _phi, bin_weight = pair
+    p1, p2, normals, tangents, segments, _phi, bin_weight = pair
     normal1, normal2 = normals
     tangent1, tangent2 = tangents
     points1 = p1 + offsets[:, None] * tangent1 + depths[:, None] * normal1
@@ -197,6 +343,16 @@ def _pair_rays(pair, offsets, face_weights, depths, depth_weights, mu, width):
     direction = delta / length[..., None]
     cosine1 = direction @ normal1
     cosine2 = -direction @ normal2
+    if segments is not None:
+        path1 = _scintillator_path(depths[:, None], offsets[:, None], cosine1,
+                                  direction @ tangent1, segments[0], width)
+        path2 = _scintillator_path(depths[None, :], offsets[None, :], cosine2,
+                                  -direction @ tangent2, segments[1], width)
+        face = face_weights[:, None] * face_weights[None, :]
+        depth = depth_weights[:, None] * depth_weights[None, :]
+        weights = face * depth * np.exp(-mu * (path1 + path2)) * bin_weight / length
+        i, j = np.indices(length.shape)
+        return np.column_stack((points1[i.ravel()], points2[j.ravel()])), weights.ravel()
     entrance1 = offsets[:, None] - depths[:, None] * (direction @ tangent1) / cosine1
     entrance2 = offsets[None, :] + depths[None, :] * (direction @ tangent2) / cosine2
     accepted = (np.abs(entrance1) <= width / 2) & (np.abs(entrance2) <= width / 2)
@@ -209,7 +365,7 @@ def _pair_rays(pair, offsets, face_weights, depths, depth_weights, mu, width):
     return np.column_stack((points1[i], points2[j])), weights
 
 
-def _doi_matrix(recon, angles_deg, settings, acquisition):
+def _doi_matrix(recon, angles_deg, settings, acquisition, *, analytic=False):
     width, mu = settings.face_width_mm, settings.mu_per_mm
     if width is None or not np.isfinite([width, mu]).all() or min(width, mu) <= 0:
         raise ValueError("DOI requires positive finite segment face width and mu (mm^-1)")
@@ -217,17 +373,26 @@ def _doi_matrix(recon, angles_deg, settings, acquisition):
            for order in (settings.face_order, settings.depth_order)):
         raise ValueError("DOI quadrature orders must be integers in [1, 12]")
     shape = (recon.n_dist, recon.n_ang)
-    pairs, depth = _nominal_pairs(acquisition, shape, recon.sino_range, width)
+    pairs, depth = _nominal_pairs(
+        acquisition, shape, recon.sino_range, width,
+        analytic_grid=recon.fov_mm if analytic else None,
+    )
     ray_count = sum(map(len, pairs.values())) * (settings.face_order * settings.depth_order)**2
     if ray_count > 10_000_000:
         raise ValueError("DOI quadrature would trace more than 10 million rays. Reduce the orders")
     face_nodes, face_weights = roots_legendre(settings.face_order)
-    depths, depth_weights, acceptance = first_interaction_quadrature(
-        depth, mu, 1.0, settings.depth_order)
+    if analytic:
+        nodes, weights = roots_legendre(settings.depth_order)
+        depths = (nodes + 1) * depth / 2
+        depth_weights = mu * depth / 2 * weights
+    else:
+        depths, depth_weights, acceptance = first_interaction_quadrature(
+            depth, mu, 1.0, settings.depth_order)
+        depth_weights *= acceptance
     offsets = np.repeat(width / 2 * face_nodes, settings.depth_order)
     face_weights = np.repeat(width / 2 * face_weights, settings.depth_order)
     depths = np.tile(depths, settings.face_order)
-    depth_weights = np.tile(acceptance * depth_weights, settings.face_order)
+    depth_weights = np.tile(depth_weights, settings.face_order)
     raw_angles = (np.arange(recon.n_ang) + 0.5) * 180 / recon.n_ang
     angle_shift = np.asarray(angles_deg) - raw_angles
     if not np.allclose(angle_shift, angle_shift[0], rtol=0, atol=1e-8):
@@ -261,7 +426,12 @@ def _doi_matrix(recon, angles_deg, settings, acquisition):
             data.append(row_data[nonzero])
     if not data:
         raise ValueError("DOI geometry has no sensitivity on this image and sinogram grid")
-    return csr_matrix((np.concatenate(data), np.concatenate(indices), indptr),
+    coefficients = np.concatenate(data)
+    if analytic:
+        # In 2D the line measure is db dtheta with orientation modulo pi.
+        # Divide by voxel area to average over uniformly distributed sources.
+        coefficients /= np.pi * recon.img_pixel**2
+    return csr_matrix((coefficients, np.concatenate(indices), indptr),
                       shape=(recon.n_dist * recon.n_ang, n * n))
 
 
@@ -273,7 +443,35 @@ def _axis(lut, name):
     return axis
 
 
-def _sv_matrix(recon, path, compose_doi):
+def lut_reference_grid(recon):
+    return np.asarray([recon.sino_range, recon.fov_mm, recon.n_img, recon.rays_per_bin,
+                       recon.cor_mm, recon.dx_cor_mm, recon.dy_cor_mm])
+
+
+def _verify_lut_acquisition(provenance, current):
+    if not current:
+        return
+    try:
+        original = json.loads(provenance)["analytical_geometry"]
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ValueError("Analytical LUT is missing its acquisition provenance") from exc
+    geometry_keys = ("data_from", "process_as", "crystal_type", "rotate_along",
+                     "radius", "pla_thickness", "crystal_size", "sipm_pitch",
+                     "sipm_pixel_n", "det_z_rotation")
+    old, new = original["detector_config"], current["detector_config"]
+    old_centers = original.get("petsys_bin_centers_mm", {})
+    new_centers = current.get("petsys_bin_centers_mm", {})
+    if (any(old.get(key) != new.get(key) for key in geometry_keys)
+            or original.get("first_rotation") != current.get("first_rotation")
+            or original.get("detector_angles") != current.get("detector_angles")
+            or original.get("object_angles_deg") != current.get("object_angles_deg")
+            or old_centers.keys() != new_centers.keys()
+            or any(not np.allclose(old_centers[head], new_centers[head],
+                                   rtol=0, atol=1e-5) for head in old_centers)):
+        raise ValueError("Analytical LUT requires the original detector and pose geometry")
+
+
+def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
     content = Path(path).read_bytes()
     with np.load(io.BytesIO(content), allow_pickle=False) as lut:
         missing = {"x_mm", "y_mm", "dx_mm", "dy_mm", "kernels",
@@ -295,6 +493,19 @@ def _sv_matrix(recon, path, compose_doi):
             raise ValueError("SV-PSF kernels must be finite, nonnegative and shaped (y,x,dy,dx)")
         if not np.allclose(kernels.sum(axis=(2, 3)), 1.0, rtol=1e-6, atol=1e-8):
             raise ValueError("Every SV-PSF kernel must sum to 1")
+        factors = None
+        if "reference_factors" in lut:
+            factors = np.asarray(lut["reference_factors"], dtype=float)
+            expected = lut_reference_grid(recon)
+            if (not contains_doi.item() or
+                    factors.shape != (recon.n_dist, recon.n_ang) or
+                    not np.isfinite(factors).all() or np.any(factors < 0) or
+                    "reference_grid" not in lut or "reference_angles_deg" not in lut or
+                    not np.array_equal(lut["reference_grid"], expected) or
+                    lut["reference_angles_deg"].shape != angles_deg.shape or
+                    not np.allclose(lut["reference_angles_deg"], angles_deg, rtol=0, atol=1e-8)):
+                raise ValueError("Analytical LUT reference must match the original image and sinogram geometry")
+            _verify_lut_acquisition(provenance.item(), acquisition)
     n = recon.n_img
     if n * n * len(dx) * len(dy) > 5_000_000:
         raise ValueError("SV-PSF matrix exceeds the sparse size limit. Reduce the image grid or LUT support")
@@ -341,8 +552,9 @@ def _sv_matrix(recon, path, compose_doi):
     if not matrix.nnz:
         raise ValueError("SV-PSF LUT has no support within the reconstructed image grid")
     metadata = dict(sha256=hashlib.sha256(content).hexdigest(),
-                    provenance=provenance.item(), doi_included=contains_doi.item())
-    return matrix, metadata
+                    provenance=provenance.item(), doi_included=contains_doi.item(),
+                    uses_reference_factors=factors is not None)
+    return matrix, factors, metadata
 
 
 class DetectorResponse:
@@ -364,13 +576,19 @@ class DetectorResponse:
         self.metadata["angles_deg"] = self.angles.tolist()
         if acquisition is not None:
             self.metadata["acquisition"] = acquisition
-        self.sv = None
+        self.sv = self.reference_factors = None
         if settings.lut_path:
-            self.sv, self.metadata["lut"] = _sv_matrix(recon, settings.lut_path, use_doi)
+            self.sv, self.reference_factors, self.metadata["lut"] = _sv_matrix(
+                recon, self.angles, settings.lut_path, use_doi, acquisition)
+
             warnings.warn("SV-PSF is exploratory until the LUT is independently calibrated "
                           "for this scanner and reconstruction model", stacklevel=2)
-        self.doi = _doi_matrix(recon, self.angles, settings, acquisition) if use_doi else None
-        if use_doi:
+        if settings.analytical:
+            from Gimntools.GimnRec.analytical_response import analytical_projection_matrix
+            self.doi = analytical_projection_matrix(recon, self.angles, settings, acquisition)
+        else:
+            self.doi = _doi_matrix(recon, self.angles, settings, acquisition) if use_doi else None
+        if use_doi and not settings.analytical:
             warnings.warn("DOI uses a 2D nominal crystal-pair aggregation by raw sinogram bin "
                           "with equal exposure per pose", stacklevel=2)
 
@@ -386,17 +604,21 @@ class DetectorResponse:
         sino_shape = (r.n_dist, angles.size)
         transpose = matrix.T if matrix is not None else None
         sv_transpose = self.sv.T if self.sv is not None else None
+        factors = self.reference_factors
+        if factors is not None and indices is not None:
+            factors = factors[:, indices]
 
         def forward(image):
             if self.sv is not None:
                 image = (self.sv @ image.ravel()).reshape(image_shape)
             if matrix is None:
-                return r._project(image, angles)
+                projection = r._project(image, angles)
+                return projection if factors is None else projection * factors
             return (matrix @ image.ravel()).reshape(sino_shape)
 
         def backward(sino):
             if transpose is None:
-                image = r._backproject(sino, angles)
+                image = r._backproject(sino if factors is None else sino * factors, angles)
             else:
                 image = (transpose @ sino.ravel()).reshape(image_shape)
             if sv_transpose is not None:
@@ -414,10 +636,14 @@ def add_response_arguments(parser):
                        help="Active transverse crystal segment width in mm. Required with DOI.")
     group.add_argument("--doi-face-order", type=int, default=3)
     group.add_argument("--doi-depth-order", type=int, default=3)
+    group.add_argument("--analytical-response", action="store_true",
+                       help="Use the full first-interaction analytical projector with DOI.")
     group.add_argument("--sv-psf-lut", help="Spatially variant response NPZ (see detector response docs).")
 
 
 def response_from_arguments(args, methods):
+    if args.analytical_response and (args.doi_mu_mm_inv is None or args.sv_psf_lut):
+        raise ValueError("--analytical-response requires DOI parameters and a standalone projection model")
     if args.doi_mu_mm_inv is None and not args.sv_psf_lut:
         if args.doi_face_mm is not None:
             raise ValueError("--doi-face-mm requires --doi-mu-mm-inv")
@@ -429,4 +655,5 @@ def response_from_arguments(args, methods):
     if (args.doi_mu_mm_inv is None) != (args.doi_face_mm is None):
         raise ValueError("Supply both --doi-mu-mm-inv and --doi-face-mm for DOI")
     return ResponseSettings(args.doi_mu_mm_inv, args.doi_face_mm,
-                            args.doi_face_order, args.doi_depth_order, args.sv_psf_lut)
+                            args.doi_face_order, args.doi_depth_order, args.sv_psf_lut,
+                            analytical=args.analytical_response)
