@@ -124,6 +124,8 @@ def build_parser():
     p.add_argument("--output-dir", default="./outputs_reconstrucao_gate")
     p.add_argument("--save-format", choices=["mhd", "nrrd", "none"], default="mhd")
     p.add_argument("--no-plots", action="store_true")
+    from Gimntools.GimnRec.detector_response import add_response_arguments
+    add_response_arguments(p)
     return p
 
 
@@ -185,6 +187,13 @@ def main(argv=None):
         build_parser().error("--angular-sigma must be finite and nonnegative")
     if args.n_dist_out < 1:
         build_parser().error("--n-dist-out must be >= 1")
+    from Gimntools.GimnRec.detector_response import response_from_arguments
+    try:
+        detector_response = response_from_arguments(args, methods)
+    except ValueError as exc:
+        build_parser().error(str(exc))
+    if detector_response is not None and detector_response.mu_per_mm is not None and args.geom_norm:
+        build_parser().error("--geom-norm duplicates geometric acceptance already calculated by DOI")
     os.makedirs(args.output_dir, exist_ok=True)
 
     name = os.path.basename(args.measurement).replace(".root", "")
@@ -193,10 +202,11 @@ def main(argv=None):
                                         float(detector_config["crystal_size"][1]))
 
     print(f"Building sinogram: {os.path.basename(args.measurement)}")
+    acquisition = {} if detector_response is not None else None
     sino_raw, _ = coincidence_to_lor(
         args.measurement, detector_config, detectors_angles, parameters,
         matrix=matrix, rsectors=rsectors,
-        first_rotation=args.first_rotation, verbose=True,
+        first_rotation=args.first_rotation, verbose=True, geometry_out=acquisition,
     )
     print(f"  Raw sinogram: {sino_raw.shape}, counts={sino_raw.sum():.0f}")
 
@@ -268,10 +278,16 @@ def main(argv=None):
         if args.n_img is not None and args.voxel_mm is not None:
             grid_kw["fov_mm"] = None
 
+    em_rec = response = None
+    if detector_response is not None:
+        from Gimntools.GimnRec.detector_response import DetectorResponse
+        em_rec = siddon_reconstructor(sino, **grid_kw)
+        response = DetectorResponse(em_rec, angles, detector_response, acquisition)
+    em_options = {"response": response} if response is not None else {}
     recs = {}
     geom = None
     if "osem" in methods:
-        r = siddon_reconstructor(sino, **grid_kw)
+        r = em_rec or siddon_reconstructor(sino, **grid_kw)
         geom = r.geometry()
         print(f"OSEM ({args.osem_iters}it × {args.osem_subsets}sub)...")
         recs["osem"] = r.osem(angles, iterations=args.osem_iters,
@@ -279,16 +295,16 @@ def main(argv=None):
                               psf_kernel=psf_k,
                               regularization_every=args.gauss_every,
                               regularization_sigma=args.gauss_sigma,
-                              legacy=args.legacy_em)
+                              legacy=args.legacy_em, **em_options)
     if "mlem" in methods:
-        r = siddon_reconstructor(sino, **grid_kw)
+        r = em_rec or siddon_reconstructor(sino, **grid_kw)
         geom = geom or r.geometry()
         print(f"MLEM ({args.mlem_iters}it)...")
         recs["mlem"] = r.mlem(angles, iterations=args.mlem_iters, norm_sino=norm,
                               psf_kernel=psf_k,
                               regularization_every=args.gauss_every,
                               regularization_sigma=args.gauss_sigma,
-                              legacy=args.legacy_em)
+                              legacy=args.legacy_em, **em_options)
     if "fbp" in methods:
         if norm_fbp is not None:
             from Gimntools.GimnRec.normalization import apply_norm_to_sinogram
@@ -298,6 +314,8 @@ def main(argv=None):
         print("FBP...")
         recs["fbp"] = r.fbp(angles, filter_type=ramLak)
 
+    if response is not None:
+        geom["detector_response"] = response.metadata
     out_npz = os.path.join(args.output_dir, f"recon_{name}.npz")
     # JSON rather than object-dtype NPZ: opening never requires pickle.
     np.savez_compressed(out_npz, sino_raw=sino_raw, sino_final=sino,
@@ -306,7 +324,7 @@ def main(argv=None):
     print(f"NPZ saved: {out_npz}")
 
     if args.save_format != "none":
-        res_for_save = {"name": name, **recs}
+        res_for_save = {"name": name, "geometry": geom, **recs}
         # Spacing comes from the RESOLVED image geometry, not from the number
         # of radial bins (they are independent since the volume-driven update).
         save_reconstructions(res_for_save, detector_config, n_dist,

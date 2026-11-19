@@ -116,7 +116,7 @@ def process_file_v2(fname, bgname, cfg, det_angles, params, rsec,
                      n_img=None, voxel_mm=None, rays_per_bin="auto",
                      backproject_chunks=1, interpolate_radial=False,
                      cor_mm=0.0, background_scale=1.0,
-                     methods=("osem", "mlem", "fbp")):
+                     methods=("osem", "mlem", "fbp"), *, detector_response=None):
     """
     Refined reconstruction pipeline.
 
@@ -196,8 +196,14 @@ def process_file_v2(fname, bgname, cfg, det_angles, params, rsec,
     methods = tuple(dict.fromkeys(m.lower().strip() for m in methods))
     if not methods or any(m not in ("osem", "mlem", "fbp") for m in methods):
         raise ValueError("methods must be a nonempty selection of osem,mlem,fbp")
+    acquisition = {}
+    geometry_kw = {"geometry_out": acquisition} if detector_response is not None else {}
+    if detector_response is not None and (use_psf or set(methods) == {"fbp"}):
+        raise ValueError("DOI/SV-PSF requires MLEM/OSEM and its own response model")
     sino_src, _ = coincidence_to_lor_fn(fname, cfg_local, det_angles,
-                                         params, rsectors=rsec)
+                                         params, rsectors=rsec, **geometry_kw)
+    if bgname is not None and acquisition:
+        acquisition.update(background=str(bgname), background_scale=float(background_scale))
     if bgname is None:
         sino_bg = np.zeros_like(sino_src)
     else:
@@ -267,6 +273,12 @@ def process_file_v2(fname, bgname, cfg, det_angles, params, rsec,
     if use_psf and any(m in methods for m in ("osem", "mlem")):
         from Gimntools.GimnRec.filters import make_psf_kernel
         psf_k = make_psf_kernel(fwhm_mm, sino_pixel)
+    em_rec = response = None
+    if detector_response is not None:
+        from Gimntools.GimnRec.detector_response import DetectorResponse
+        em_rec = siddon_reconstructor_cls(sino_src, **grid_kw)
+        response = DetectorResponse(em_rec, angles, detector_response, acquisition)
+    em_options = {"response": response} if response is not None else {}
     outputs = {}
     geometry = None
     for method in methods:
@@ -274,21 +286,24 @@ def process_file_v2(fname, bgname, cfg, det_angles, params, rsec,
             rec = siddon_reconstructor_cls(sino_fbp, **grid_kw)
             out = rec.fbp(angles, filter_type=ramLak_fn)
         elif method == "osem":
-            rec = siddon_reconstructor_cls(sino_src, **grid_kw)
+            rec = em_rec or siddon_reconstructor_cls(sino_src, **grid_kw)
             out = rec.osem(angles, iterations=recon_iters,
                            subsets_n=recon_subsets, psf_kernel=psf_k,
                            background_sino=background, norm_sino=None,
                            regularization_every=gauss_every,
-                           regularization_sigma=gauss_sigma)
+                           regularization_sigma=gauss_sigma, **em_options)
         else:
-            rec = siddon_reconstructor_cls(sino_src, **grid_kw)
+            rec = em_rec or siddon_reconstructor_cls(sino_src, **grid_kw)
             out = rec.mlem(angles, iterations=mlem_iters, psf_kernel=psf_k,
                            background_sino=background, norm_sino=None,
                            regularization_every=gauss_every,
-                           regularization_sigma=gauss_sigma)
+                           regularization_sigma=gauss_sigma, **em_options)
         outputs[method] = out
         geometry = rec.geometry()
         print(f"  {method.upper()}: {out.shape}")
+
+    if response is not None:
+        geometry["detector_response"] = response.metadata
 
     if plot_comparison_fn is not None and all(m in outputs for m in ("osem", "mlem", "fbp")):
         plot_comparison_fn(outputs['osem'], outputs['mlem'], outputs['fbp'],

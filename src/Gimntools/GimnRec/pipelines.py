@@ -43,7 +43,7 @@ def process_file(fname, bgname, cfg, det_angles, params, rsec,
                   cor_expected_source_xy=(0.0, 0.0),
                   n_img=None, voxel_mm=None, rays_per_bin="auto",
                   backproject_chunks=1, interpolate_radial=False,
-                  cor_mm=0.0):
+                  cor_mm=0.0, *, detector_response=None):
     """Per-file reconstruction pipeline (legacy).
 
     COR parameters
@@ -78,7 +78,11 @@ def process_file(fname, bgname, cfg, det_angles, params, rsec,
     print(f"  Image FOV: {fov_mm:.1f}mm | Sino range: {sino_range_mm:.1f}mm")
 
     # 1. Sinograms
-    sino_src, _ = coincidence_to_lor(fname, cfg, det_angles, params, rsectors=rsec)
+    acquisition = {}
+    geometry_kw = {"geometry_out": acquisition} if detector_response is not None else {}
+    sino_src, _ = coincidence_to_lor(fname, cfg, det_angles, params, rsectors=rsec, **geometry_kw)
+    if acquisition and bgname is not None:
+        acquisition.update(background=str(bgname), background_scale=1.0)
     sino_bg, _  = coincidence_to_lor(bgname, cfg, det_angles, params, rsectors=rsec)
     # MLEM/OSEM receive the measured prompts, with background additive.
     # This legacy function assumes identical measurement/background exposures;
@@ -143,7 +147,7 @@ def process_file(fname, bgname, cfg, det_angles, params, rsec,
 
     # 3. PSF kernel (radial: uses the real bin width)
     psf_pixel = sino_range_mm / sino_raw.shape[1]
-    psf_k = make_psf_kernel(fwhm_mm, psf_pixel) if use_psf else None
+    psf_k = make_psf_kernel(fwhm_mm, psf_pixel) if use_psf and detector_response is None else None
     if psf_k is not None:
         print(f"  PSF: FWHM={fwhm_mm}mm, kernel={len(psf_k)}px")
 
@@ -179,17 +183,22 @@ def process_file(fname, bgname, cfg, det_angles, params, rsec,
     if n_img is None and voxel_mm is None:
         grid_kw['n_img'] = sino_raw.shape[1]
     rec1 = siddon_reconstructor(sino_final, **grid_kw)
+    response = None
+    if detector_response is not None:
+        from Gimntools.GimnRec.detector_response import DetectorResponse
+        response = DetectorResponse(rec1, angles, detector_response, acquisition)
+    em_options = {"response": response} if response is not None else {}
     print(f"  OSEM ({recon_iters}it × {recon_subsets}sub)...")
     osem = rec1.osem(angles, iterations=recon_iters, subsets_n=recon_subsets,
                       psf_kernel=psf_k, norm_sino=norm_ref,
                       background_sino=bg_model,
-                      regularization_every=gauss_every, regularization_sigma=gauss_sigma)
+                      regularization_every=gauss_every, regularization_sigma=gauss_sigma, **em_options)
 
-    rec2 = siddon_reconstructor(sino_final, **grid_kw)
+    rec2 = rec1 if response is not None else siddon_reconstructor(sino_final, **grid_kw)
     print(f"  MLEM ({mlem_iters}it)...")
     mlem = rec2.mlem(angles, iterations=mlem_iters, psf_kernel=psf_k,
                       norm_sino=norm_ref, background_sino=bg_model,
-                      regularization_every=gauss_every, regularization_sigma=gauss_sigma)
+                      regularization_every=gauss_every, regularization_sigma=gauss_sigma, **em_options)
 
     rec3 = siddon_reconstructor(sino_fbp, **grid_kw)
     print(f"  FBP...")
@@ -207,8 +216,14 @@ def process_file(fname, bgname, cfg, det_angles, params, rsec,
 
     # 7. Save
     sp = f"recon_{name}.npz"
+    geometry = rec1.geometry()
+    metadata = {}
+    if response is not None:
+        import json
+        geometry["detector_response"] = response.metadata
+        metadata["geometry_json"] = json.dumps(geometry)
     np.savez_compressed(sp, sino_raw=sino_raw, sino_smooth=sino_smooth,
-                         osem=osem, mlem=mlem, fbp=fbp)
+                         osem=osem, mlem=mlem, fbp=fbp, **metadata)
     print(f"  Saved: {sp}")
 
     print(f"\n  {'Method':<8} {'FWHM_H':>8} {'FWHM_V':>8} {'Pico (mm)':>16}")
@@ -220,4 +235,4 @@ def process_file(fname, bgname, cfg, det_angles, params, rsec,
     return {'name':name, 'osem':osem, 'mlem':mlem, 'fbp':fbp,
             'sino_smooth':sino_smooth, 'fwhm':fwhm_data,
             'fov_mm': rec1.fov_mm, 'voxel_mm': rec1.voxel_mm,
-            'geometry': rec1.geometry()}
+            'geometry': geometry}
