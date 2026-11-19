@@ -261,6 +261,9 @@ Use **Build multiple ROOTs…** within the corresponding acquisition tab
 to build several sinograms in one batch. PETSYS reads the distinct positions
 from `angleGantry_1`. GATE counts the recorded `runID`s and retains the
 configured step to map those IDs into angles. Names include `_rotang_<n>`.
+Use **Threads (0 = auto)** in the GATE tab to control sinogram workers.
+Automatic mode uses up to four threads for geometry batches. The GATE
+CLI exposes the same control as `--sino-threads`.
 In the **Sinogram** tab, use **Save sinograms…** to export one or more
 portable NPZ files and **Load sinograms…** to open them. The archives carry
 counts, acquisition metadata and calibration, so they can be reconstructed

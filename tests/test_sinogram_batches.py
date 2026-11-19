@@ -111,3 +111,56 @@ def test_build_archive_and_reconstruct_two_petsys_sinograms(tmp_path, monkeypatc
                    for r in app.reconstructions)
     finally:
         app.destroy()
+
+
+@pytest.mark.parametrize("mode", ["CrystalID", "GateGlobalPositions", "GeneralGlobalPosition", "PaulGlobalPosition"])
+def test_gate_workers_match_with_multiple_geometry_chunks(tmp_path, mode):
+    from pandas.testing import assert_frame_equal
+    from Gimntools.GimnRec.sinogramer import convert_crystal_to_xy
+    from Gimntools.GimnRec.systemSpace import systemSpace
+
+    cfg, detectors, sectors = setup_geometry("GATE")
+    cfg["process_as"] = mode
+    cfg["rotate_along"] = "z"
+    rng = np.random.default_rng(8)
+    n = 68_000
+    data = {
+        "runID": rng.choice([0, 2, 5], n),
+        "rsectorID1": np.full(n, 4), "rsectorID2": np.full(n, 29),
+        "crystalID1": rng.integers(0, 16, n), "crystalID2": rng.integers(0, 16, n),
+        "globalPosX1": rng.normal(30, 0.1, n), "globalPosX2": rng.normal(-31, 0.2, n),
+        **{f"globalPos{axis}{hit}": rng.normal(0.1, 3., n) for axis in "YZ" for hit in (1, 2)},
+    }
+    path = tmp_path / "parallel-gate.root"
+    with uproot.recreate(path) as root:
+        root.mktree("Coincidences", data)
+    arguments = path, cfg, detectors, get_default_parameters("GATE")
+    grid = (13, 21, 54)
+    single, single_events = coincidence_to_lor(*arguments, rsectors=sectors, matrix=grid, workers=1)
+    threaded, threaded_events = coincidence_to_lor(*arguments, rsectors=sectors, matrix=grid, workers=3)
+    np.testing.assert_array_equal(single, threaded)
+    assert_frame_equal(single_events, threaded_events, check_exact=True)
+    assert 0 < threaded.sum() <= n
+
+    oracle = systemSpace(detectors, "z", dict(cfg, crystal_size=np.asarray(cfg["crystal_size"], dtype=float)), "z")
+    if mode != "CrystalID":
+        oracle.set_matrix(grid)
+    expected = []
+    for event in (0, 1, 32767, 32768, n - 1):
+        pose = 0. if mode == "GeneralGlobalPosition" else -30. * data["runID"][event]
+        oracle.rotateBy(pose)
+        points = []
+        rows = []
+        for hit in (1, 2):
+            if mode == "CrystalID":
+                col, row = convert_crystal_to_xy(data[f"crystalID{hit}"][event], 4, 4)
+                rows.append(row)
+                local = np.array([-oracle.positionsX[col], -oracle.positionsY[row], 0.])
+                point = oracle.getGlobalPreRotation(local, sectors[data[f"rsectorID{hit}"][event]])
+            else:
+                point = np.array([data[f"globalPos{axis}{hit}"][event] for axis in "XYZ"])
+            points.append(oracle.getGlobalRotation(point))
+        radial, angle = oracle.global_to_sinogram(*points, "z")
+        z = sum(rows) if rows else oracle.get_slice_mono((points[0][2], points[1][2]))
+        expected.append((radial, angle, z))
+    np.testing.assert_allclose(threaded_events.iloc[[0, 1, 32767, 32768, n - 1]], expected, atol=1e-12)

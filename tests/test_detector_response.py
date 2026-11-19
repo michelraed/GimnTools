@@ -572,3 +572,106 @@ def test_face_order_auto_adapts_to_voxel_and_uses_the_same_adjoint():
     x = np.linspace(0, 1, 16**2).reshape(16, 16)
     y = np.arange(fine.n_dist * 21).reshape(fine.n_dist, 21)
     assert np.vdot(forward(x), y) == pytest.approx(np.vdot(x, transpose(y)), rel=1e-12)
+
+
+def test_gate_lut_saves_a_broad_grid_with_uncaptured_voxels(tmp_path):
+    from Gimntools.GimnRec.analytical_response import analytical_projection_matrix, generate_analytical_lut
+
+    cfg, det, mapping = setup_geometry("GATE")
+    cfg.update(rotation_angles=12, sipm_pixel_n=[2, 2], crystal_size=[20, 6.72, 6.72], sino_range_mm=6.72)
+    acq = acquisition_geometry("gate-two-segment-test", cfg, det, mapping, "y", -15. * np.arange(12))
+    r = siddon_reconstructor(np.zeros((1, 3, 36)), n_img=75, voxel_mm=.84, sino_range_mm=6.72,
+                             verbose=False)
+    angles = angle_centers(r)
+    settings = ResponseSettings(.08184, 3.0, face_order="auto", analytical=True)
+    matrix = analytical_projection_matrix(r, angles, settings, acq)
+    mask = np.asarray(matrix.getnnz(axis=0)).reshape(75, 75) > 0
+    assert not mask[2, 2] and mask[37, 37]  # The previous mesh included a nonobservable corner.
+    path = tmp_path / "gate_psf.npz"
+    with pytest.warns(UserWarning, match="nearby observable"):
+        fitted = generate_analytical_lut(r, angles, settings, acq, path, fit_tolerance=1.)
+    assert path.is_file()
+    np.testing.assert_array_equal(fitted["source_support"], mask)
+    assert (fitted["efficiency"] == 0).any()
+    assert np.all(fitted["fit_efficiency"] > 0)
+    assert fitted["reference_grid"][1] == pytest.approx(63.)
+    assert np.allclose(fitted["kernels"].sum(axis=(-1, -2)), 1.)
+    with pytest.warns(UserWarning, match="SV-PSF"):
+        response = DetectorResponse(r, angles, ResponseSettings(lut_path=str(path)), acq)
+    forward, adjoint = response.operators()
+    assert not np.any(forward(~mask))
+    assert not np.any(adjoint(np.ones((r.n_dist, r.n_ang)))[~mask])
+    rng = np.random.default_rng(1909)
+    image = rng.random(mask.shape)
+    measured = rng.random((r.n_dist, r.n_ang))
+    np.testing.assert_allclose(np.vdot(forward(image), measured), np.vdot(image, adjoint(measured)), rtol=1e-12)
+
+
+def test_depth_auto_matches_resolved_order_and_improves_gated_reference():
+    from Gimntools.GimnRec.analytical_response import analytical_projection_matrix
+    from Gimntools.GimnRec.detector_response import crystal_response_settings, depth_quadrature_order
+
+    cfg, det, mapping = setup_geometry("GATE")
+    cfg.update(sipm_pixel_n=[8, 8], crystal_size=[20, 26.88, 26.88], sino_range_mm=26.88)
+    acq = acquisition_geometry("gate-depth-test", cfg, det, mapping, "y", -30. * np.arange(6))
+    r = siddon_reconstructor(np.zeros((1, 15, 90)), n_img=23, voxel_mm=1.25, sino_range_mm=26.88,
+                             verbose=False)
+    angles = angle_centers(r)
+    auto = crystal_response_settings(cfg, depth_order="auto", face_order=3, analytical=True)
+    order = depth_quadrature_order(r, auto, acq)
+    assert 3 < order < 12
+    fitted = DetectorResponse(r, angles, auto, acq)
+    assert fitted.metadata["depth_order_used"] == order
+    fixed = analytical_projection_matrix(r, angles,
+                                         ResponseSettings(.08184, 3., 3, order, analytical=True), acq)
+    assert (fitted.doi != fixed).nnz == 0
+    coarse = analytical_projection_matrix(r, angles, ResponseSettings(.08184, 3., 3, 3), acq)
+    reference = analytical_projection_matrix(r, angles, ResponseSettings(.08184, 3., 3, 12), acq)
+    assert np.linalg.norm((fitted.doi - reference).data) < np.linalg.norm((coarse - reference).data)
+
+
+def test_automatic_psf_reconstructs_and_saves_the_same_map(tmp_path, monkeypatch):
+    tk = pytest.importorskip("tkinter")
+    from Gimntools.GimnRec.ui import app as ui
+
+    monkeypatch.setenv("GIMNTOOLS_DB", str(tmp_path / "profiles.db"))
+    try:
+        app = ui.ReconUI()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    try:
+        errors = []
+        monkeypatch.setattr(app, "error", errors.append)
+        cfg, det, mapping = setup_geometry("GATE")
+        acq = acquisition_geometry("gate-automatic", cfg, det, mapping, "y", -30. * np.arange(6))
+        r = siddon_reconstructor(np.zeros((1, 7, 42)), fov_mm=13.44, sino_range_mm=13.44, verbose=False)
+        angles = angle_centers(r)
+        reference = DetectorResponse(r, angles, ResponseSettings(.08184, 3., analytical=True), acq)
+        image = np.zeros((7, 7))
+        image[3, 3] = 1000.
+        counts = reference.operators()[0](image)
+        app.set_sinogram(counts[None], r.fov_mm, r.sino_range, "GATE", detector_config=cfg,
+                         acquisition=acq, angles_override=angles, name="Automatic")
+        p = app.recon_panel
+        p.refresh_sino_list(select="Automatic")
+        p.v["method"].set("mlem")
+        p.v["iters"].set(2)
+        p.v["response_mode"].set("Automatic SV-PSF")
+        p.v["sv_lut"].set("")
+        with pytest.warns(UserWarning, match="SV-PSF"):
+            app.run_recon(p._snapshot(), "Automatic")
+        assert not errors, errors
+        result = app.reconstructions[-1]
+        assert result["geometry"]["detector_response"]["lut"]["source"] == "automatic"
+        assert np.isfinite(result["volume"]).all() and result["volume"].max() > 0
+        assert not list(tmp_path.glob("*.npz"))
+        path = tmp_path / "generated_psf.npz"
+        monkeypatch.setattr(ui.filedialog, "asksaveasfilename", lambda **_: str(path))
+        p.on_new_volume()
+        assert "disabled" not in p.save_psf.state()
+        p.save_psf.invoke()
+        assert path.read_bytes() == result["psf_lut_bytes"]
+        with np.load(path, allow_pickle=False) as data:
+            assert data["source_efficiency"].shape == (7, 7)
+    finally:
+        app.destroy()

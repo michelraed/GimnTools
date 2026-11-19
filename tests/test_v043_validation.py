@@ -312,9 +312,11 @@ def test_gate_nonconsecutive_run_ids_preserve_true_angular_step(monkeypatch):
     """Run IDs 0,3,1 imply gantry changes -3*step,+2*step (not -step,-step)."""
     import sys
     import types
+    from contextlib import nullcontext
     from pathlib import Path
     from Gimntools.GimnRec.utils import coincidence_to_lor
     from Gimntools.GimnRec.systemSpace import systemSpace
+    from Gimntools.GimnRec.sinogramer import convert_crystal_to_xy
     from Gimntools.GimnRec.data_loaders import load_detector_config
     cfg=load_detector_config(Path(__file__).parents[1]/'examples'/'CONFIG_GATE'/'detector_config_gate.json')
     cfg['process_as']='CrystalID'
@@ -328,15 +330,20 @@ def test_gate_nonconsecutive_run_ids_preserve_true_angular_step(monkeypatch):
     fake['runID']=np.array([0,3,1])
     branch=types.SimpleNamespace(arrays=lambda *a,**kw:fake)
     fakefile={'Coincidences':branch}
-    monkeypatch.setitem(sys.modules,'uproot',types.SimpleNamespace(open=lambda x:fakefile))
-    orig=systemSpace.rotateGantry
-    called=[]
-    def spy(self,rotation):
-        called.append(rotation)
-        return orig(self,rotation)
-    monkeypatch.setattr(systemSpace,'rotateGantry',spy)
-    sino, df=coincidence_to_lor('fake.root',cfg,
-             {'detector-1':0.,'detector-2':180.},
-             list(fake),rsectors={0:'detector-1',1:'detector-2'})
-    np.testing.assert_allclose(called,[-45.,30.])
-    assert sino.shape[0]==15 and len(df)==n
+    monkeypatch.setitem(sys.modules, "uproot", types.SimpleNamespace(open=lambda _: nullcontext(fakefile)))
+    detectors = {"detector-1": 0., "detector-2": 180.}
+    rsectors = {0: "detector-1", 1: "detector-2"}
+    sino, events = coincidence_to_lor("fake.root", cfg, detectors, list(fake), rsectors=rsectors)
+    axis = cfg["rotate_along"]
+    scalar = systemSpace(detectors, axis, cfg, axis)
+    hits = []
+    for crystal, head in ((16, "detector-1"), (24, "detector-2")):
+        col, row = convert_crystal_to_xy(crystal)
+        local = np.array([-scalar.positionsX[col], -scalar.positionsY[row], 0.])
+        hits.append(scalar.getGlobalPreRotation(local, head))
+    expected = []
+    for pose in (0., -45., -15.):
+        scalar.rotateBy(pose)
+        expected.append(scalar.global_to_sinogram(*(scalar.getGlobalRotation(hit) for hit in hits), axis))
+    np.testing.assert_allclose(events[["distance", "angle"]], expected, atol=1e-12)
+    assert sino.shape[0] == 15 and len(events) == n

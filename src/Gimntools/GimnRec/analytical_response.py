@@ -2,16 +2,22 @@
 
 from dataclasses import asdict
 from functools import lru_cache
+from io import BytesIO
 import json
 from operator import index
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from time import perf_counter
 import warnings
 
 import numpy as np
 from scipy.optimize import minimize, nnls
+from scipy.spatial import cKDTree
 
 from Gimntools import __version__
-from Gimntools.GimnRec.detector_response import _doi_matrix, face_quadrature_order, lut_reference_grid
+from Gimntools.GimnRec.detector_response import (
+    _doi_matrix, depth_quadrature_order, face_quadrature_order, lut_reference_grid,
+)
 
 
 def analytical_projection_matrix(recon, angles_deg, settings, acquisition):
@@ -35,10 +41,11 @@ def analytical_projection_matrix(recon, angles_deg, settings, acquisition):
     return matrix
 
 
-def analytical_reference_factors(recon, angles_deg, matrix):
-    """Match the uniform-field projection on the requested image grid."""
-    uniform = recon._project(np.ones((recon.n_img, recon.n_img)),
-                             np.deg2rad(angles_deg))
+def analytical_reference_factors(recon, angles_deg, matrix, *, source_support=None):
+    """Match uniform illumination of the modeled voxels on the requested grid."""
+    source = (np.ones((recon.n_img, recon.n_img)) if source_support is None
+              else np.asarray(source_support, dtype=float))
+    uniform = recon._project(source, np.deg2rad(angles_deg))
     analytical_uniform = np.asarray(matrix.sum(axis=1)).reshape(uniform.shape)
     return np.divide(analytical_uniform, uniform, out=np.zeros_like(uniform),
                      where=uniform > 0)
@@ -92,7 +99,7 @@ def _fit_kernel(reference, target, support, regularization):
     return kernel.reshape(support, support), amplitude * scale, error
 
 
-def generate_analytical_lut(recon, angles_deg, settings, acquisition, path, *,
+def generate_analytical_lut(recon, angles_deg, settings, acquisition, path=None, *,
                             sample_count=5, half_support=2, kernel_stride=1,
                             regularization=1e-4, weights=None, fit_tolerance=0.30):
     """Fit and export a full DOI-inclusive LUT using the conventional Siddon model.
@@ -100,6 +107,7 @@ def generate_analytical_lut(recon, angles_deg, settings, acquisition, path, *,
     The file is compatible with the regular LUT loader. Separate arrays hold
     the fitted amplitude, analytical efficiency and relative projection error.
     Positions and support offsets fall on the supplied reconstruction grid.
+    With no output path, return the fitted map without creating a file.
     """
     sample_count, half_support, kernel_stride = map(index, (sample_count, half_support, kernel_stride))
     margin = half_support * kernel_stride
@@ -123,10 +131,30 @@ def generate_analytical_lut(recon, angles_deg, settings, acquisition, path, *,
     start = perf_counter()
     matrix = analytical_projection_matrix(recon, angles_deg, settings, acquisition).tocsc()
     angles_rad = np.deg2rad(angles_deg)
-    reference_factors = analytical_reference_factors(recon, angles_deg, matrix)
+    efficiency_map = np.asarray(matrix.sum(axis=0)).reshape(n, n)
+    source_support = efficiency_map > 0
+    reference_factors = analytical_reference_factors(
+        recon, angles_deg, matrix, source_support=source_support)
     weighted_factors = reference_factors.ravel() * sqrt_weights
-    mesh = (np.array([n // 2]) if sample_count == 1 else
-            np.rint(np.linspace(margin, n - 1 - margin, sample_count)).astype(int))
+
+    candidates = np.asarray(matrix.T @ sqrt_weights).reshape(n, n) > 0
+    if margin:
+        candidates[:margin] = candidates[-margin:] = False
+        candidates[:, :margin] = candidates[:, -margin:] = False
+    positions = np.argwhere(candidates)
+    if not len(positions):
+        raise ValueError("No observable source voxel has room for the requested LUT kernel. "
+                         "Check the field of view, weights and kernel width")
+    tree = cKDTree(positions)
+    lower, upper = positions.min(axis=0), positions.max(axis=0)
+
+    def axis_samples(first, last):
+        if sample_count == 1:
+            return np.array([np.clip(n // 2, first, last)])
+        return np.unique(np.rint(np.linspace(first, last, sample_count)).astype(int))
+
+    y_mesh = axis_samples(lower[0], upper[0])
+    x_mesh = axis_samples(lower[1], upper[1])
     offset = np.arange(-half_support, half_support + 1) * kernel_stride
     width = len(offset)
     if width**2 * sqrt_weights.size > 5_000_000:
@@ -138,43 +166,99 @@ def generate_analytical_lut(recon, angles_deg, settings, acquisition, path, *,
         image[iy, ix] = 1
         return recon._project(image, angles_rad).ravel() * weighted_factors
 
-    shape = (mesh.size, mesh.size)
+    @lru_cache(maxsize=1024)
+    def fit(iy, ix):
+        target = matrix[:, iy * n + ix].toarray().ravel() * sqrt_weights
+        reference = np.column_stack([
+            reference_column(iy + dy, ix + dx) for dy in offset for dx in offset
+        ])
+        if not np.any(reference.T @ target):
+            return None
+        return _fit_kernel(reference, target, width, regularization)
+
+    def observable_fit(iy, ix):
+        _, closest = tree.query((iy, ix))
+        sy, sx = positions[closest]
+        result = fit(sy, sx)
+        if result is not None:
+            return (sy, sx), result
+        _, neighbours = tree.query((iy, ix), k=len(positions))
+        for item in np.atleast_1d(neighbours)[1:]:
+            sy, sx = positions[item]
+            result = fit(sy, sx)
+            if result is not None:
+                return (sy, sx), result
+        raise ValueError("Analytical and Siddon responses do not overlap at observable source voxels. "
+                         "Increase the kernel width or the rays per sinogram bin")
+
+    shape = (len(y_mesh), len(x_mesh))
     kernels = np.empty((*shape, width, width))
-    amplitude, error, efficiency = (np.empty(shape) for _ in range(3))
-    for i, iy in enumerate(mesh):
-        for j, ix in enumerate(mesh):
-            target = matrix[:, iy * n + ix].toarray().ravel()
-            reference = np.column_stack([
-                reference_column(iy + dy, ix + dx) for dy in offset for dx in offset
-            ])
-            kernels[i, j], amplitude[i, j], error[i, j] = _fit_kernel(
-                reference, target * sqrt_weights, width, regularization)
-            efficiency[i, j] = target.sum()
+    amplitude, error, fit_efficiency = (np.empty(shape) for _ in range(3))
+    fit_positions = np.empty((*shape, 2), dtype=int)
+    for i, iy in enumerate(y_mesh):
+        for j, ix in enumerate(x_mesh):
+            (sy, sx), result = observable_fit(iy, ix)
+            kernels[i, j], amplitude[i, j], error[i, j] = result
+            fit_efficiency[i, j] = efficiency_map[sy, sx]
+            fit_positions[i, j] = [sx, sy]
+    nominal = np.stack(np.meshgrid(x_mesh, y_mesh), axis=-1)
+    relocated = int(np.count_nonzero(np.any(nominal != fit_positions, axis=-1)))
+    if relocated:
+        warnings.warn(
+            f"{relocated} LUT nodes were fitted at nearby observable voxels. "
+            "See the recorded fitting locations and efficiency map.", stacklevel=2)
     if np.any(error > fit_tolerance):
         warnings.warn("Analytical LUT fit exceeds the error threshold at some positions. "
                       "Use the analytical projection matrix for quantitative work.", stacklevel=2)
-    axis = recon.img_min + (mesh + 0.5) * recon.img_pixel
+    grid = recon.img_min + (np.arange(n) + 0.5) * recon.img_pixel
     delta = offset * recon.img_pixel
     provenance = json.dumps(dict(
         version=__version__, model="2D collinear first-interaction, finite rectangular segments",
         analytical_geometry=acquisition, reconstruction_grid=recon.geometry(),
         settings=asdict(settings), face_order_used=face_quadrature_order(recon, settings),
+        depth_order_used=depth_quadrature_order(recon, settings, acquisition),
         regularization=regularization,
         weighted_fit=weights is not None, fit_tolerance=fit_tolerance,
-        forward_reference="Siddon with analytical uniform-field bin acceptance",
+        relocated_nodes=relocated, requested_samples_per_axis=sample_count,
+        forward_reference="Siddon with analytical supported-field bin acceptance",
         references=["10.1088/0031-9155/54/7/004", "10.1088/0031-9155/48/8/302",
                     "10.1088/0031-9155/56/13/018", "10.1088/1361-6560/ab4914"],
     ))
-    result = dict(x_mm=axis, y_mm=axis, dx_mm=delta, dy_mm=delta, kernels=kernels,
+    result = dict(x_mm=grid[x_mesh], y_mm=grid[y_mesh], dx_mm=delta, dy_mm=delta, kernels=kernels,
                   provenance=provenance, doi_included=True, fit_scale=amplitude,
-                  relative_error=error, efficiency=efficiency,
+                  relative_error=error, efficiency=efficiency_map[np.ix_(y_mesh, x_mesh)],
+                  fit_efficiency=fit_efficiency, fit_positions_mm=grid[fit_positions],
+                  source_support=source_support, source_efficiency=efficiency_map,
                   reference_factors=reference_factors,
                   reference_angles_deg=np.asarray(angles_deg),
                   reference_grid=lut_reference_grid(recon),
                   elapsed_seconds=perf_counter() - start)
-    with open(path, "wb") as output:
-        np.savez_compressed(output, **result)
+    if path is not None:
+        save_analytical_lut(path, result)
     return result
+
+
+def pack_analytical_lut(result):
+    """Encode the same NPZ used by both the automatic and file-based models."""
+    with BytesIO() as output:
+        np.savez_compressed(output, **result)
+        return output.getvalue()
+
+
+def save_analytical_lut(path, result):
+    """Save a fitted map atomically from arrays or previously packed bytes."""
+    path = Path(path)
+    output = NamedTemporaryFile(dir=path.parent, delete=False)
+    temporary = Path(output.name)
+    try:
+        with output:
+            if isinstance(result, bytes):
+                output.write(result)
+            else:
+                np.savez_compressed(output, **result)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def kernel_summary(lut, iy, ix):

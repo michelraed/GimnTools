@@ -254,12 +254,18 @@ configured material and face width unless you override them. Rays contribute
 only through the gap between the detector faces for each pose. The requested
 image matrix and FOV are retained, including pixels with limited or zero
 sensitivity. Converge the face and depth orders on the
-grid you intend to use. In a synthetic check with central and displaced
+grid you intend to use. **Depth order** also accepts `auto`. It chooses
+an order from 3 to 12 based on the largest transverse displacement
+from depth sampling and on the crystal's attenuation length. The
+resolved order is recorded with the reconstruction. In a synthetic check with central and displaced
 sources, the relative projection differences versus order 9 dropped
 from 7.0–7.8% at order 3 to 1.5–1.6% at order 5 for both coordinates.
 
-Use **Generate analytical LUT…** in Tk or the **Analytical LUT** tab in Qt
-to sample this response automatically. The generator fits each sampled
+Use **Generate analytical LUT…** in either interface to save the map,
+or select **Automatic SV-PSF** to calculate it with the active geometry,
+COR and image grid during reconstruction. **Save PSF map…** exports the
+map from a selected reconstruction that used the automatic mode. The
+generator fits each sampled
 projection column using a nonnegative unit-mass kernel composed with
 Siddon. The reference projection is multiplied by the ratio of the
 analytical and Siddon projections of a uniform image, bin by bin.
@@ -270,7 +276,12 @@ nonnegative amplitude eliminated analytically. `kernel_stride` sets the
 kernel sampling in integer voxel steps. The saved NPZ includes the
 fitted amplitude, analytical efficiency, relative error, processing time
 and provenance. The NPZ also stores the matched reference acceptance
-and its grid. To reuse this LUT with a different matrix, voxel size or
+and its grid. The fitting grid is limited to observable source locations
+with room for the kernel. Where an interpolation node has zero sensitivity
+or the reference and analytical responses have no overlap, the kernel is
+fitted at a nearby observable voxel. The NPZ records the actual XY fitting
+coordinates, the efficiencies and the full source-support mask. The loader
+keeps the unsupported voxels at zero modeled response. To reuse this LUT with a different matrix, voxel size or
 image field, build the sinogram from the matching acquisition and choose
 the target image grid. GimnTools deposits the kernel offsets in mm onto the
 new grid and recomputes the uniform-field bin acceptance. The sinogram

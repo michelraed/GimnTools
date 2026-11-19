@@ -319,7 +319,7 @@ class ConvergencePanel(ttk.Frame):
 
         config = entry["detector_config"] or {}
         if snapshot["response_mode"].get() in ("DOI-aware", "DOI + residual SV response",
-                                               "Analytical detector response"):
+                                               "Analytical detector response", "Automatic SV-PSF"):
             material = crystal_material(config.get("crystal_material"))
             snapshot.update({
                 "doi_material": SimpleNamespace(get=lambda: material),

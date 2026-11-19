@@ -24,7 +24,7 @@ class ResponseSettings:
     mu_per_mm: float | None = None
     face_width_mm: float | None = None
     face_order: int | str = 3
-    depth_order: int = 3
+    depth_order: int | str = 3
     lut_path: str | None = None
     analytical: bool = False
     material: str | None = None
@@ -68,13 +68,19 @@ def crystal_response_settings(config, *, material=None, mu=None, face=None,
             raise ValueError(f"Enter a positive {label}")
         return number
 
-    try:
-        face_order = "auto" if str(face_order).strip().lower() == "auto" else int(str(face_order))
-        depth_order = int(str(depth_order))
-    except ValueError as exc:
-        raise ValueError("Use Auto for the face order or enter quadrature orders from 1 to 12") from exc
-    if not ((face_order == "auto" or 1 <= face_order <= 12) and 1 <= depth_order <= 12):
-        raise ValueError("Use Auto for the face order or enter quadrature orders from 1 to 12")
+    def order(value):
+        text = str(value).strip().lower()
+        if text == "auto":
+            return text
+        try:
+            number = int(text)
+            if 1 <= number <= 12:
+                return number
+        except ValueError:
+            pass
+        raise ValueError("Enter Auto or an integer from 1 to 12 for each quadrature order")
+
+    face_order, depth_order = order(face_order), order(depth_order)
     return ResponseSettings(positive(mu, "511 keV attenuation coefficient in mm⁻¹"),
                             positive(face, "segment face width in mm"),
                             face_order, depth_order, lut_path, analytical, material)
@@ -419,18 +425,38 @@ def _pair_rays(pair, offsets, face_weights, depths, depth_weights, mu, width):
     return np.column_stack((points1[i], points2[j])), weights
 
 
-def face_quadrature_order(recon, settings):
-    """Choose transverse ray sampling at the scale of an image pixel."""
-    order = settings.face_order
-    if order != "auto":
-        return order
-    # Include both lateral edges to bound the largest unsampled interval.
+def _pixel_quadrature_order(span_mm, pixel_mm):
     for order in range(3, 13):
         nodes, _ = roots_legendre(order)
-        max_gap = np.diff(np.r_[-1, nodes, 1]).max() * settings.face_width_mm / 2
-        if max_gap <= recon.img_pixel:
+        largest_gap = np.diff(np.r_[-1, nodes, 1]).max() * span_mm / 2
+        if largest_gap <= pixel_mm:
             return order
     return 12
+
+
+def face_quadrature_order(recon, settings):
+    """Choose transverse ray sampling at the scale of an image pixel."""
+    if settings.face_order != "auto":
+        return settings.face_order
+    return _pixel_quadrature_order(settings.face_width_mm, recon.img_pixel)
+
+
+def depth_quadrature_order(recon, settings, acquisition):
+    """Resolve depth sampling from parallax, attenuation and voxel size."""
+    if settings.depth_order != "auto":
+        return settings.depth_order
+    cfg = acquisition["detector_config"]
+    axis = cfg.get("rotate_along", "y").lower()
+    rotation = float(cfg["det_z_rotation"]) if cfg["data_from"] == "PETSYS" else 0.0
+    transverse = 0 if _transverse_is_x(axis, rotation) else 1
+    aperture = ((cfg["sipm_pixel_n"][transverse] - 1) * cfg["sipm_pitch"][transverse]
+                + settings.face_width_mm)
+    gap = 2 * (cfg["radius"] + cfg["pla_thickness"])
+    # Bound the transverse displacement between adjacent depth nodes at
+    # the maximum obliquity, and sample each attenuation length with at
+    # least one interval. Both constraints are in physical units.
+    effective_span = cfg["crystal_size"][0] * max(aperture / gap, settings.mu_per_mm * recon.img_pixel)
+    return _pixel_quadrature_order(effective_span, recon.img_pixel)
 
 
 def _doi_matrix(recon, angles_deg, settings, acquisition, *, analytic=False):
@@ -438,28 +464,29 @@ def _doi_matrix(recon, angles_deg, settings, acquisition, *, analytic=False):
     if width is None or not np.isfinite([width, mu]).all() or min(width, mu) <= 0:
         raise ValueError("DOI requires positive finite segment face width and mu (mm^-1)")
     face_order = face_quadrature_order(recon, settings)
-    if any(not isinstance(order, (int, np.integer)) or not 1 <= order <= 12
-           for order in (face_order, settings.depth_order)):
-        raise ValueError("DOI quadrature orders must be integers in [1, 12]")
     shape = (recon.n_dist, recon.n_ang)
     pairs, depth = _nominal_pairs(
         acquisition, shape, recon.sino_range, width,
         analytic=analytic,
     )
-    ray_count = sum(map(len, pairs.values())) * (face_order * settings.depth_order)**2
+    depth_order = depth_quadrature_order(recon, settings, acquisition)
+    if any(not isinstance(order, (int, np.integer)) or not 1 <= order <= 12
+           for order in (face_order, depth_order)):
+        raise ValueError("DOI quadrature orders must be integers in [1, 12] or auto")
+    ray_count = sum(map(len, pairs.values())) * (face_order * depth_order)**2
     if ray_count > 10_000_000:
         raise ValueError("DOI quadrature would trace more than 10 million rays. Reduce the orders")
     face_nodes, face_weights = roots_legendre(face_order)
     if analytic:
-        nodes, weights = roots_legendre(settings.depth_order)
+        nodes, weights = roots_legendre(depth_order)
         depths = (nodes + 1) * depth / 2
         depth_weights = mu * depth / 2 * weights
     else:
         depths, depth_weights, acceptance = first_interaction_quadrature(
-            depth, mu, 1.0, settings.depth_order)
+            depth, mu, 1.0, depth_order)
         depth_weights *= acceptance
-    offsets = np.repeat(width / 2 * face_nodes, settings.depth_order)
-    face_weights = np.repeat(width / 2 * face_weights, settings.depth_order)
+    offsets = np.repeat(width / 2 * face_nodes, depth_order)
+    face_weights = np.repeat(width / 2 * face_weights, depth_order)
     depths = np.tile(depths, face_order)
     depth_weights = np.tile(depth_weights, face_order)
     raw_angles = (np.arange(recon.n_ang) + 0.5) * 180 / recon.n_ang
@@ -536,8 +563,8 @@ def _verify_lut_acquisition(original, current):
         raise ValueError("Analytical LUT requires the original detector and pose geometry")
 
 
-def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
-    content = Path(path).read_bytes()
+def _sv_matrix(recon, angles_deg, source, compose_doi, acquisition):
+    content = source if isinstance(source, bytes) else Path(source).read_bytes()
     with np.load(io.BytesIO(content), allow_pickle=False) as lut:
         missing = {"x_mm", "y_mm", "dx_mm", "dy_mm", "kernels",
                    "provenance", "doi_included"} - set(lut.files)
@@ -562,6 +589,7 @@ def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
         if n * n * len(dx) * len(dy) > 5_000_000:
             raise ValueError("SV-PSF matrix exceeds the sparse size limit. Reduce the image grid or LUT support")
         factors = None
+        source_support = None
         factors_recomputed = False
         if "reference_factors" in lut:
             factors = np.asarray(lut["reference_factors"], dtype=float)
@@ -584,6 +612,12 @@ def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
             except (TypeError, ValueError, KeyError) as exc:
                 raise ValueError("Analytical LUT is missing its acquisition provenance") from exc
             _verify_lut_acquisition(original, acquisition)
+            if "source_support" in lut:
+                source_support = np.asarray(lut["source_support"])
+                size = int(grid[2])
+                if (source_support.shape != (size, size) or source_support.dtype.kind != "b"
+                        or not np.any(source_support)):
+                    raise ValueError("Analytical LUT source support must be a nonempty boolean mask on the fitted grid")
             if not np.allclose(grid[1:4], expected[1:4], rtol=0, atol=1e-8):
                 if not acquisition:
                     raise ValueError("Build the sinogram from ROOT to verify the acquisition before "
@@ -596,8 +630,10 @@ def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
                 from Gimntools.GimnRec.analytical_response import (
                     analytical_projection_matrix, analytical_reference_factors,
                 )
-                factors = analytical_reference_factors(
-                    recon, angles_deg, analytical_projection_matrix(recon, angles_deg, settings, original))
+                analytical = analytical_projection_matrix(recon, angles_deg, settings, original)
+                if source_support is not None:
+                    source_support = np.asarray(analytical.getnnz(axis=0)).reshape(n, n) > 0
+                factors = analytical_reference_factors(recon, angles_deg, analytical, source_support=source_support)
                 factors_recomputed = True
     bins = recon.img_min + (np.arange(n) + 0.5) * recon.img_pixel
     # Linear interpolation on the calibrated source grid. Singleton axes
@@ -607,6 +643,7 @@ def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
     for first in range(0, n * n, 4096):
         source = np.arange(first, min(first + 4096, n * n))
         iy, ix = np.divmod(source, n)
+        supported = source_support[iy, ix] if source_support is not None else True
         points = np.column_stack((bins[iy].clip(y[0], y[-1]), bins[ix].clip(x[0], x[-1])))
         if interp is None:
             weights = np.broadcast_to(kernels[0, 0], (len(source), len(dy), len(dx)))
@@ -627,7 +664,7 @@ def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
                     for ox, wx in ((bx, 1 - fx), (bx + 1, fx)):
                         coeff = weights[:, j, i] * wy * wx
                         ty, tx = iy + oy, ix + ox
-                        valid = (coeff > 0) & (ty >= 0) & (ty < n) & (tx >= 0) & (tx < n)
+                        valid = supported & (coeff > 0) & (ty >= 0) & (ty < n) & (tx >= 0) & (tx < n)
                         rows.append((ty[valid] * n + tx[valid]))
                         cols.append(source[valid] - first)
                         data.append(coeff[valid])
@@ -643,7 +680,7 @@ def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
         raise ValueError("SV-PSF LUT has no support within the reconstructed image grid")
     metadata = dict(sha256=hashlib.sha256(content).hexdigest(),
                     provenance=provenance.item(), doi_included=contains_doi.item(),
-                    uses_reference_factors=factors is not None,
+                    uses_reference_factors=factors is not None, uses_source_support=source_support is not None,
                     reference_factors_recomputed=factors_recomputed)
     return matrix, factors, metadata
 
@@ -651,13 +688,16 @@ def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
 class DetectorResponse:
     """An EM system model built for a particular image and acquisition grid."""
 
-    def __init__(self, recon, angles_deg, settings, acquisition=None):
+    def __init__(self, recon, angles_deg, settings, acquisition=None, *, lut_bytes=None):
         self.recon = recon
         self.angles = np.asarray(angles_deg, dtype=float).copy()
         if self.angles.shape != (recon.n_ang,) or not np.isfinite(self.angles).all():
             raise ValueError("Invalid acquisition angles for detector response")
         use_doi = settings.mu_per_mm is not None
-        if not use_doi and not settings.lut_path:
+        if lut_bytes is not None and settings.lut_path:
+            raise ValueError("Choose one SV-PSF LUT source")
+        lut_source = lut_bytes if lut_bytes is not None else (settings.lut_path or None)
+        if not use_doi and lut_source is None:
             raise ValueError("Select DOI or supply an SV-PSF LUT")
         if use_doi and not acquisition:
             raise ValueError("DOI needs the acquisition geometry. Build the sinogram from ROOT first")
@@ -668,9 +708,10 @@ class DetectorResponse:
         if acquisition is not None:
             self.metadata["acquisition"] = acquisition
         self.sv = self.reference_factors = None
-        if settings.lut_path:
+        if lut_source is not None:
             self.sv, self.reference_factors, self.metadata["lut"] = _sv_matrix(
-                recon, self.angles, settings.lut_path, use_doi, acquisition)
+                recon, self.angles, lut_source, use_doi, acquisition)
+            self.metadata["lut"]["source"] = "automatic" if lut_bytes is not None else "file"
 
             if self.metadata["lut"]["reference_factors_recomputed"]:
                 warnings.warn("Analytical LUT acceptance was recomputed for this image grid. "
@@ -685,6 +726,7 @@ class DetectorResponse:
             self.doi = _doi_matrix(recon, self.angles, settings, acquisition) if use_doi else None
         if use_doi:
             self.metadata["face_order_used"] = face_quadrature_order(recon, settings)
+            self.metadata["depth_order_used"] = depth_quadrature_order(recon, settings, acquisition)
         if use_doi and not settings.analytical:
             warnings.warn("DOI uses a 2D nominal crystal-pair aggregation by raw sinogram bin "
                           "with equal exposure per pose", stacklevel=2)
@@ -735,7 +777,8 @@ def add_response_arguments(parser):
                        help="Override the configured active transverse crystal segment width in mm.")
     group.add_argument("--doi-face-order", default=3,
                        help="Face quadrature order (1–12 or auto for voxel-aware sampling).")
-    group.add_argument("--doi-depth-order", type=int, default=3)
+    group.add_argument("--doi-depth-order", default=3,
+                       help="Depth quadrature order (1–12 or auto for voxel-aware sampling).")
     group.add_argument("--analytical-response", action="store_true",
                        help="Use the full first-interaction analytical projector with DOI.")
     group.add_argument("--sv-psf-lut", help="Spatially variant response NPZ (see detector response docs).")

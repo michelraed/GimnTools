@@ -62,6 +62,8 @@ def build_parser():
                         "are recomputed internally for segmented).")
 
     # Sinogram processing
+    p.add_argument("--sino-threads", type=int, default=0,
+                   help="Geometry workers for building the GATE sinogram (0 = automatic).")
     p.add_argument("--interpolate", action="store_true",
                    help="Radially interpolate to --n-dist-out bins "
                         "(FBP only; iterative reconstruction uses original measured bins).")
@@ -207,6 +209,7 @@ def main(argv=None):
         args.measurement, detector_config, detectors_angles, parameters,
         matrix=matrix, rsectors=rsectors,
         first_rotation=args.first_rotation, verbose=True, geometry_out=acquisition,
+        workers=args.sino_threads or None,
     )
     print(f"  Raw sinogram: {sino_raw.shape}, counts={sino_raw.sum():.0f}")
 

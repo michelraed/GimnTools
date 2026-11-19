@@ -13,7 +13,6 @@ from operator import index
 
 from scipy.spatial.transform import Rotation as ROT
 from Gimntools.GimnRec.systemSpace import DetectorReference, systemSpace
-from Gimntools.GimnRec.sinogramer import convert_crystal_to_xy
 import numpy as np
 import pandas as pd
 import os
@@ -49,9 +48,33 @@ def _resolve_axes(detector_config):
 
 
 
+_LOR_CHUNK_SIZE = 32_768
+
+
+def _lor_coordinates(p1, p2):
+    du, dv = (p2 - p1).T
+    midpoint = 0.5 * (p1 + p2)
+    phi = np.arctan2(du, -dv) % np.pi
+    distance = midpoint[:, 0] * np.cos(phi) + midpoint[:, 1] * np.sin(phi)
+    angle = np.rad2deg(phi)
+    degenerate = (du == 0) & (dv == 0)
+    distance[degenerate] = angle[degenerate] = np.nan
+    return distance, angle
+
+
+def _lor_bins(distance, angle, axial, shape, radial_half):
+    nz, nr, na = shape
+    radial = np.floor(((distance + radial_half) / (2.0 * radial_half)) * nr)
+    angular = np.floor((angle / 180.0) * na)
+    valid = ((axial >= 0) & (axial < nz) & (radial >= 0) & (radial < nr)
+             & (angular >= 0) & (angular < na))
+    return ((axial[valid].astype(np.intp) * nr + radial[valid].astype(np.intp)) * na
+            + angular[valid].astype(np.intp))
+
+
 def _petsys_chunk(start, *, data, space, rsectors, local_rotation, origin,
-                  plane, energy_range, radial_half, chunk_size):
-    block = slice(start, start + chunk_size)
+                  plane, energy_range, radial_half):
+    block = slice(start, start + _LOR_CHUNK_SIZE)
     chips = [data[f"chipID_{hit}"][block] for hit in (1, 2)]
     energies = [data[f"energyCorrected_{hit}"][block] for hit in (1, 2)]
     e_min, e_max = energy_range
@@ -77,14 +100,7 @@ def _petsys_chunk(start, *, data, space, rsectors, local_rotation, origin,
 
     if not points:
         return np.empty(0), np.empty(0), np.empty(0, dtype=int), np.empty(0, dtype=int)
-    p1, p2 = points
-    du, dv = (p2 - p1).T
-    midpoint = 0.5 * (p1 + p2)
-    phi = np.arctan2(du, -dv) % np.pi
-    distance = midpoint[:, 0] * np.cos(phi) + midpoint[:, 1] * np.sin(phi)
-    angle = np.rad2deg(phi)
-    degenerate = (du == 0) & (dv == 0)
-    distance[degenerate] = angle[degenerate] = np.nan
+    distance, angle = _lor_coordinates(*points)
     axial = data["slice_1"][block][accepted]
     if not np.issubdtype(axial.dtype, np.integer):
         # Preserve truncation toward zero and the scalar reader's error on non-finite slices.
@@ -93,27 +109,42 @@ def _petsys_chunk(start, *, data, space, rsectors, local_rotation, origin,
         else:
             axial = np.asarray([int(value) for value in axial])
 
-    nz, nr, na = space.sinogram.shape
-    radial = np.floor(((distance + radial_half) / (2.0 * radial_half)) * nr)
-    angular = np.floor((angle / 180.0) * na)
-    valid = ((axial >= 0) & (axial < nz) & (radial >= 0) & (radial < nr)
-             & (angular >= 0) & (angular < na))
-    bins = ((axial[valid].astype(np.intp) * nr + radial[valid].astype(np.intp)) * na
-            + angular[valid].astype(np.intp))
+    bins = _lor_bins(distance, angle, axial, space.sinogram.shape, radial_half)
     return distance, angle, axial, bins
+
+
+def _collect_lor_chunks(processor, sino, total, workers):
+    workers = index(workers)
+    if workers < 1:
+        raise ValueError("workers must be a positive integer")
+    starts = range(0, total, _LOR_CHUNK_SIZE)
+    columns = {"distance": [], "angle": [], "slice": []}
+
+    def collect(results):
+        for distance, angle, axial, bins in results:
+            # Workers compute geometry. One ordered reduction owns the histogram.
+            np.add.at(sino.ravel(), bins, 1)
+            if distance.size:
+                for key, values in zip(columns, (distance, angle, axial)):
+                    columns[key].append(values)
+
+    workers = min(workers, len(starts))
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            # Bound outstanding chunks so large files do not queue every future at once.
+            for first in range(0, len(starts), workers * 2):
+                collect(executor.map(processor, starts[first:first + workers * 2]))
+    else:
+        collect(map(processor, starts))
+    events = pd.DataFrame({key: np.concatenate(parts) if parts else []
+                           for key, parts in columns.items()})
+    return sino, events
 
 
 def _petsys_sinogram(data, space, config, rsectors, workers):
     total = len(data["SiPMPosX_1"])
     if workers is None:
-        # On smaller files the extra batch scheduling can cost more than it saves.
         workers = min(2, os.cpu_count() or 1) if total >= 1_000_000 else 1
-    workers = index(workers)
-    if workers < 1:
-        raise ValueError("workers must be a positive integer")
-
-    chunk_size = 32_768
-    starts = range(0, total, chunk_size)
     processor = partial(
         _petsys_chunk, data=data, space=space,
         rsectors={chip: name for chip, name in rsectors.items() if name is not None},
@@ -123,27 +154,70 @@ def _petsys_sinogram(data, space, config, rsectors, workers):
         plane=space._PLANE_AXES[space.rotate_along],
         energy_range=(config["e_min"], config["e_max"]),
         radial_half=float(config.get("sino_range_mm", config["crystal_size"][1])) / 2,
-        chunk_size=chunk_size,
     )
-    sino = space.get_sinogram()
-    columns = {"distance": [], "angle": [], "slice": []}
+    return _collect_lor_chunks(processor, space.sinogram, total, workers)
 
-    def collect(results):
-        for distance, angle, axial, bins in results:
-            # Only this thread updates the histogram. Workers handle geometry.
-            np.add.at(sino.ravel(), bins, 1)
-            if distance.size:
-                for key, values in zip(columns, (distance, angle, axial)):
-                    columns[key].append(values)
 
-    if workers > 1 and len(starts) > 1:
-        with ThreadPoolExecutor(max_workers=min(workers, len(starts))) as executor:
-            collect(executor.map(processor, starts))
+def _gate_centers(space, cfg, rsectors):
+    columns, rows = map(int, cfg["sipm_pixel_n"])
+    row, column = np.divmod(np.arange(columns * rows), columns)
+    local = np.column_stack((np.zeros(len(row)), -np.asarray(space.positionsY)[row],
+                             -np.asarray(space.positionsX)[columns - 1 - column]))
+    origin = DetectorReference(np.zeros(3), cfg["crystal_size"], cfg["pla_thickness"], cfg["radius"])
+    return {sector: space.detectors[name].apply(local + origin)
+            for sector, name in rsectors.items() if name in space.detectors}
+
+
+def _gate_chunk(start, *, data, space, centers, step_deg, slice_axis, radial_half, axial_width):
+    block = slice(start, start + _LOR_CHUNK_SIZE)
+    points = []
+    axial = None
+    if centers is not None:
+        axial = np.zeros(len(data["runID"][block]), dtype=np.intp)
+        total_crystals = space.cols * space.rows
+        for hit in (1, 2):
+            crystal = data[f"crystalID{hit}"][block]
+            if np.any((crystal < 0) | (crystal >= total_crystals) | (crystal != np.floor(crystal))):
+                raise ValueError("crystal_id outside segmented detector grid")
+            crystal = crystal.astype(np.intp, copy=False)
+            axial += crystal // space.cols
+            sector = data[f"rsectorID{hit}"][block]
+            coords = np.empty((len(crystal), 3))
+            for item in np.unique(sector):
+                group = sector == item
+                if item not in centers:
+                    raise ValueError(f"GATE rsectorID {item} is missing from the detector mapping")
+                coords[group] = centers[item][crystal[group]]
+            points.append(coords)
     else:
-        collect(map(processor, starts))
-    events = pd.DataFrame({key: np.concatenate(parts) if parts else []
-                           for key, parts in columns.items()})
-    return sino, events
+        points = [np.column_stack([data[f"globalPos{axis}{hit}"][block] for axis in "XYZ"])
+                  .astype(float, copy=False) for hit in (1, 2)]
+    if step_deg:
+        angles = -step_deg * data["runID"][block].astype(np.int64)
+        rotation = ROT.from_euler(space.rotate_along, angles[:, None], degrees=True)
+        points = [rotation.apply(coords) for coords in points]
+    if axial is None:
+        # Direct/cross-plane axial bins use the mean of the two positions.
+        nz = space.sinogram.shape[0]
+        summed = points[0][:, slice_axis] + points[1][:, slice_axis]
+        bins = np.floor((summed + axial_width) / (2 * axial_width / nz))
+        valid = (bins >= 0) & (bins < nz)
+        axial = np.where(valid, bins, -1).astype(np.intp)
+    plane = space._PLANE_AXES[space.rotate_along]
+    distance, angle = _lor_coordinates(*(coords[:, plane] for coords in points))
+    return distance, angle, axial, _lor_bins(distance, angle, axial, space.sinogram.shape, radial_half)
+
+
+def _gate_sinogram(data, space, cfg, rsectors, step_deg, slice_axis, workers):
+    total = len(data["runID"])
+    if workers is None:
+        workers = min(4, os.cpu_count() or 1)
+    centers = _gate_centers(space, cfg, rsectors) if cfg["process_as"] == "CrystalID" else None
+    processor = partial(_gate_chunk, data=data, space=space, centers=centers,
+                        step_deg=step_deg, slice_axis=slice_axis,
+                        radial_half=float(cfg.get("sino_range_mm", cfg["crystal_size"][1])) / 2,
+                        axial_width=float(cfg["crystal_size"][1]))
+    return _collect_lor_chunks(processor, space.sinogram, total, workers)
 
 
 def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
@@ -155,10 +229,9 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
     Parameters
     ----------
     workers : int or None
-        PETSYS geometry worker count. None selects one worker for small
-        acquisitions and up to two for acquisitions with at least one million
-        events. One worker processes vectorized batches on the caller thread.
-        GATE is serial.
+        Number of geometry workers. None selects up to four for GATE and
+        up to two for PETSYS acquisitions with at least one million events.
+        One worker processes vectorized batches on the caller thread.
     geometry_out : dict or None
         Receives the geometry, observed PETSYS poses and GATE run IDs.
     infer_rotation_angles : bool
@@ -189,9 +262,8 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
 
     if detector_config["data_from"] == "GATE":
         PETSYS = systemSpace(detectors_angles, rotate_along, detector_config, first_rot)
-        f = up.open(file_name)
-        c = f['Coincidences'].arrays(parameters, library='np')
-        ev_n = c['globalPosX1'].shape[0]
+        with up.open(file_name) as root:
+            c = root["Coincidences"].arrays(parameters, library="np")
         if detector_config["process_as"] in ("GateGlobalPositions","PaulGlobalPosition","GeneralGlobalPosition"):
             PETSYS.set_matrix(matrix)
         # astep is only used by the process_as branches that rotate the gantry
@@ -210,44 +282,7 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
             geometry_out["gate_run_ids"] = runs.astype(int).tolist()
             geometry_out["count_kind"] = "runs"
             geometry_out["observed_count"] = len(runs)
-        prev=0; df={'distance':[],'angle':[],'slice':[]}; cum=0
-        for e in range(ev_n):
-            cID1=c['crystalID1'][e]; cID2=c['crystalID2'][e]
-            gX1,gY1,gZ1=c["globalPosX1"][e],c["globalPosY1"][e],c["globalPosZ1"][e]
-            gX2,gY2,gZ2=c["globalPosX2"][e],c["globalPosY2"][e],c["globalPosZ2"][e]
-            rS1=c["rsectorID1"][e]; rS2=c["rsectorID2"][e]; rID=c["runID"][e]
-            if detector_config["process_as"]=="CrystalID":
-                if rID != prev:
-                    # Missing/unsorted runIDs must not silently compress
-                    # angular spacing. Relative rotation is based on runID.
-                    delta = int(rID) - int(prev)
-                    PETSYS.rotateGantry(-astep * delta)
-                    cum += astep * delta
-                    prev = rID
-                X1,Y1=convert_crystal_to_xy(cID1, int(detector_config['sipm_pixel_n'][0]), int(detector_config['sipm_pixel_n'][1])); X2,Y2=convert_crystal_to_xy(cID2, int(detector_config['sipm_pixel_n'][0]), int(detector_config['sipm_pixel_n'][1]))
-                e1=np.asarray([-PETSYS.positionsX[X1],-PETSYS.positionsY[Y1],0])
-                e2=np.asarray([-PETSYS.positionsX[X2],-PETSYS.positionsY[Y2],0])
-                p1=PETSYS.getGlobalPreRotation(e1,rsectors[rS1]); p2=PETSYS.getGlobalPreRotation(e2,rsectors[rS2])
-                g1=PETSYS.getGlobalRotation(p1); g2=PETSYS.getGlobalRotation(p2)
-                d,a=PETSYS.global_to_sinogram(g1,g2,rotate_along)
-                # CrystalID: the slice comes from the crystal row index (Y1, Y2),
-                # which is local to the detector and independent of the rotation axis.
-                sz=int(PETSYS.get_slice_seg((Y1,Y2)))
-                df['distance'].append(d); df['angle'].append(a); df['slice'].append(sz); PETSYS.fill_sino(d,a,sz)
-            elif detector_config["process_as"] in ("GateGlobalPositions","PaulGlobalPosition","GeneralGlobalPosition"):
-                if detector_config["process_as"] != "GeneralGlobalPosition":
-                    if rID != prev:
-                        # Use true runID displacement, even if some runs are absent.
-                        delta = int(rID) - int(prev)
-                        PETSYS.rotateGantry(-astep * delta)
-                        cum += astep * delta
-                        prev = rID
-                e1=np.asarray([gX1,gY1,gZ1]); e2=np.asarray([gX2,gY2,gZ2])
-                g1=PETSYS.getGlobalRotation(e1); g2=PETSYS.getGlobalRotation(e2)
-                d,a=PETSYS.global_to_sinogram(g1,g2,rotate_along)
-                sz=int(PETSYS.get_slice_mono((g1[slice_axis],g2[slice_axis])))
-                df['distance'].append(d); df['angle'].append(a); df['slice'].append(sz); PETSYS.fill_sino(d,a,sz)
-        return PETSYS.get_sinogram(), pd.DataFrame(df)
+        return _gate_sinogram(c, PETSYS, detector_config, rsectors, astep, slice_axis, workers)
 
     elif detector_config["data_from"] == "PETSYS":
         with up.open(file_name) as root:

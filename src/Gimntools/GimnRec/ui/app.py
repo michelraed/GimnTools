@@ -756,6 +756,8 @@ class GatePanel(ttk.Frame):
         self.var_gnorm = tk.BooleanVar(value=False)
         self.var_ndist = tk.IntVar(value=128)
         self.var_asigma = tk.DoubleVar(value=0.5)
+        self.var_sino_threads = tk.IntVar(value=0)
+        labeled_spin(box_files, "Threads (0 = auto)", self.var_sino_threads, 0, 16)
         ttk.Checkbutton(box_files, text="Interpolar radialmente (crystalID)",
                         variable=self.var_interp).pack(anchor="w", pady=2)
         ttk.Checkbutton(box_files, text="Geometric norm (dual-head sensitivity)",
@@ -787,6 +789,7 @@ class GatePanel(ttk.Frame):
                         interpolate=self.var_interp.get(),
                         n_dist=self.var_ndist.get(),
                         angular_sigma=self.var_asigma.get(),
+                        workers=self.var_sino_threads.get() or None,
                         use_norm=self.var_gnorm.get(),
                         name=self.var_name.get())
             _build_root_batch(self, paths, spec)
@@ -806,7 +809,7 @@ class GatePanel(ttk.Frame):
             sino, _ = coincidence_to_lor(spec['path'], cfg, angles,
                                          get_default_parameters("gate"),
                                          rsectors=rsec, verbose=True,
-                                         geometry_out=acquisition)
+                                         geometry_out=acquisition, workers=spec['workers'])
             self.app.log(f"[GATE] {acquisition['observed_count']} runs detected in ROOT "
                          f"(rotation plan: {cfg['rotation_angles']} positions)")
             if spec['interpolate']:
@@ -1467,7 +1470,7 @@ class ReconstructionPanel(ttk.Frame):
         labeled_spin(box, "EM relaxation", self.v["em_relaxation"], 0.1, 1.0, is_double=True)
         labeled_entry(box, "EM ratio cap", self.v["ratio_cap"])
         labeled_entry(box, "Min sensitivity (auto / %)", self.v["sensitivity_pct"])
-        ttk.Label(box, text="Auto uses 0.5% of peak sensitivity for the analytical model. 0 keeps the full support.",
+        ttk.Label(box, text="Auto uses 0.5% of peak sensitivity for analytical and automatic response. 0 keeps full support.",
                   style="Hint.TLabel", wraplength=270).pack(anchor="w")
         labeled_spin(box, "gauss_every", self.v["gevery"], 0, 100)
         labeled_spin(box, "gauss_sigma", self.v["gsigma"], 0.0, 10.0, is_double=True)
@@ -1488,8 +1491,8 @@ class ReconstructionPanel(ttk.Frame):
         )
         labeled_combo(response_box, "EM model", self.v["response_mode"],
                       ["Conventional", "Existing radial Gaussian", "DOI-aware",
-                       "Spatially variant PSF", "DOI + residual SV response",
-                       "Analytical detector response"], width=24)
+                       "Spatially variant PSF", "Automatic SV-PSF", "DOI + residual SV response",
+                       "Analytical detector response"], width=26)
         radial = ttk.Frame(response_box)
         labeled_spin(radial, "PSF FWHM (mm)", self.v["fwhm"], 0.0, 30.0, is_double=True)
         doi = ttk.Frame(response_box)
@@ -1500,7 +1503,7 @@ class ReconstructionPanel(ttk.Frame):
         labeled_entry(doi, "Segment face (mm)", self.v["doi_face"])
         labeled_entry(doi, "Mu 511 (1/mm)", self.v["doi_mu"])
         labeled_entry(doi, "Face order (auto)", self.v["doi_face_order"])
-        labeled_entry(doi, "Depth quadrature", self.v["doi_depth_order"])
+        labeled_entry(doi, "Depth order (auto)", self.v["doi_depth_order"])
         sv = ttk.Frame(response_box)
         file_picker(sv, "SV-PSF LUT", self.v["sv_lut"], "lut.open", patterns=(("NPZ", "*.npz"),))
         ttk.Label(sv, text="Exploratory until independently calibrated.",
@@ -1514,7 +1517,7 @@ class ReconstructionPanel(ttk.Frame):
             mode = self.v["response_mode"].get()
             if mode == "Existing radial Gaussian":
                 radial.pack(fill=tk.X)
-            if mode in ("DOI-aware", "DOI + residual SV response", "Analytical detector response"):
+            if mode in ("DOI-aware", "DOI + residual SV response", "Analytical detector response", "Automatic SV-PSF"):
                 doi.pack(fill=tk.X)
             if mode in ("Spatially variant PSF", "DOI + residual SV response"):
                 sv.pack(fill=tk.X)
@@ -1526,9 +1529,12 @@ class ReconstructionPanel(ttk.Frame):
             from Gimntools.GimnRec.ui.tk_analytical import open_generator
             open_generator(self)
 
-        ttk.Button(response_box, text="Generate analytical LUT...", style="Primary.TButton",
-                   command=generate_analytical).pack(fill=tk.X)
-
+        map_buttons = ttk.Frame(response_box)
+        map_buttons.pack(fill=tk.X)
+        ttk.Button(map_buttons, text="Generate analytical LUT...", command=generate_analytical).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        self.save_psf = ttk.Button(map_buttons, text="Save PSF map...", command=self._save_psf_map, state="disabled")
+        self.save_psf.pack(side=tk.LEFT, padx=(4, 0))
 
         # ---- image grid: sinogram-driven (legacy) vs volume-driven --------
         gbox = ttk.LabelFrame(ctrl, text="Image grid", padding=6)
@@ -1826,6 +1832,7 @@ class ReconstructionPanel(ttk.Frame):
                                        if r["name"] != name]
         if self.current_recon and self.current_recon.get("name") == name:
             self.current_recon = None
+            self.save_psf.state(["disabled"])
         self.app._q.put(("recon_list_refresh", None))
         self.app.log(f"[recon−] removido: {name}")
 
@@ -1843,6 +1850,25 @@ class ReconstructionPanel(ttk.Frame):
         self.app.last_method = entry.get("method", "-")
         self.on_new_volume()
 
+    def _save_psf_map(self):
+        from Gimntools.GimnRec.analytical_response import save_analytical_lut
+
+        entry = self.current_recon or {}
+        payload = entry.get("psf_lut_bytes")
+        if payload is None:
+            return
+        path = self.app.session.choose(
+            "lut.save", filedialog.asksaveasfilename, parent=self, title="Save PSF map",
+            defaultextension=".npz", initialfile=f"{Path(entry['name']).name}_psf.npz",
+            filetypes=[("NPZ LUT", "*.npz")],
+        )
+        if path:
+            try:
+                save_analytical_lut(path, payload)
+                self.app.log(f"[SV-PSF] Saved the reconstruction's map to {path}")
+            except OSError as exc:
+                self.app.error(str(exc))
+
     def _voxel_sizes(self):
         """Return X, Y and Z spacing in millimetres."""
         if self.current_recon and self.current_recon.get("spacing"):
@@ -1854,6 +1880,8 @@ class ReconstructionPanel(ttk.Frame):
         return dxy, dxy, dz / (getattr(self.app, "vol_zoom", 1) or 1)
 
     def on_new_volume(self):
+        has_map = self.current_recon and self.current_recon.get("psf_lut_bytes")
+        self.save_psf.state(["!disabled"] if has_map else ["disabled"])
         nz, ny, nx = self.app.volume.shape
         self.scales["z"].configure(to=max(0, nz - 1)); self.scales["z"].set(nz // 2)
         self.scales["y"].configure(to=max(0, ny - 1)); self.scales["y"].set(ny // 2)
@@ -3522,7 +3550,7 @@ class ReconUI(tk.Tk):
         self.session.watch("files", paths, defaults=legacy if isinstance(legacy, dict) else None)
 
         panels = {
-            "gate": (self.gate, "var_interp var_gnorm var_ndist var_asigma var_name"),
+            "gate": (self.gate, "var_interp var_gnorm var_ndist var_asigma var_sino_threads var_name"),
             "petsys": (self.petsys, "var_apply_corr var_gnorm var_bg_scale var_ndist var_asigma var_sino_threads var_name"),
             "sinogram": (self.sino_panel, "var_click"),
             "volume": (self.recon_panel, "var_recon_name var_fmt"),
@@ -3662,6 +3690,7 @@ class ReconUI(tk.Tk):
         self.angles = entry['angles']
         self.volume = None            # do not display a previous acquisition
         self.recon_panel.current_recon = None
+        self.recon_panel.save_psf.state(["disabled"])
         self.fov_mm = entry['fov_mm']
         self.sino_range_mm = entry['sino_range_mm']
         self.last_source = entry['source']
@@ -3874,39 +3903,56 @@ class ReconUI(tk.Tk):
                      f"{r.voxel_mm:.4f} mm | radial bin {r.sino_pixel:.4f} mm "
                      f"| rays/bin {r.rays_per_bin} | COR {r.cor_mm:+.4f} mm "
                      f"({r.cor_mm/r.sino_pixel:+.3f} bins)")
-            psf, response = None, None
+            psf = response = auto_lut = None
             mode = params["response_mode"].get() if "response_mode" in params else "Conventional"
+            automatic_psf = mode == "Automatic SV-PSF"
             if method != "fbp":
                 use_doi = mode in ("DOI-aware", "DOI + residual SV response", "Analytical detector response")
                 use_lut = mode in ("Spatially variant PSF", "DOI + residual SV response")
-                if use_doi or use_lut:
+                if use_doi or use_lut or automatic_psf:
                     from Gimntools.GimnRec.detector_response import DetectorResponse, ResponseSettings
                     if entry.get("rebinned"):
                         raise ValueError("Build the raw sinogram without radial interpolation for DOI/SV-PSF")
-                    if use_doi and norm is not None:
-                        raise ValueError("Build the sinogram with geometric normalization disabled for DOI")
+                    if (use_doi or automatic_psf) and norm is not None:
+                        raise ValueError("Build the sinogram with geometric normalization disabled for this detector response")
                     if params["legacy"].get():
                         raise ValueError("Disable Legacy EM for DOI/SV-PSF")
                     lut = params["sv_lut"].get() if use_lut else None
                     if use_lut and not lut:
                         raise ValueError("Select an SV-PSF LUT file")
                     settings = ResponseSettings(lut_path=lut)
-                    if use_doi:
+                    if use_doi or automatic_psf:
                         settings = crystal_response_settings(
                             cfg,
                             material=params["doi_material"].get() if "doi_material" in params else None,
                             mu=params["doi_mu"].get(), face=params["doi_face"].get(),
                             face_order=params["doi_face_order"].get(),
                             depth_order=params["doi_depth_order"].get(),
-                            lut_path=lut, analytical=mode == "Analytical detector response",
+                            lut_path=lut, analytical=automatic_psf or mode == "Analytical detector response",
                         )
                         self.log(f"[{entry['name']}] {settings.material}, "
                                  f"μ={settings.mu_per_mm:.5g} mm⁻¹, face={settings.face_width_mm:.4g} mm")
                     self.log(f"[{entry['name']}] {mode} (exploratory 2D model)")
-                    response = DetectorResponse(r, angles, settings, entry.get("acquisition"))
+                    acquisition = entry.get("acquisition")
+                    if automatic_psf:
+                        from Gimntools.GimnRec.analytical_response import generate_analytical_lut, pack_analytical_lut
+
+                        self.log(f"[{entry['name']}] Fitting the PSF map on the current grid…")
+                        half_support = min(2, (r.n_img - 1) // 2)
+                        sample_count = min(5, r.n_img - 2 * half_support)
+                        fitted = generate_analytical_lut(
+                            r, angles, settings, acquisition,
+                            sample_count=sample_count, half_support=half_support,
+                        )
+                        auto_lut = pack_analytical_lut(fitted)
+                        response = DetectorResponse(r, angles, ResponseSettings(), acquisition, lut_bytes=auto_lut)
+                        self.log(f"[{entry['name']}] PSF map fitted in {fitted['elapsed_seconds']:.1f} s"
+                                 f" · maximum projection error {fitted['relative_error'].max():.1%}")
+                    else:
+                        response = DetectorResponse(r, angles, settings, acquisition)
                     if use_doi:
                         self.log(f"[{entry['name']}] crystal quadrature: "
-                                 f"face={response.metadata['face_order_used']}, depth={settings.depth_order}")
+                                 f"face={response.metadata['face_order_used']}, depth={response.metadata['depth_order_used']}")
                     if use_lut and response.metadata["lut"]["reference_factors_recomputed"]:
                         self.log(f"[{entry['name']}] LUT acceptance recomputed for "
                                  f"{r.n_img}×{r.n_img} at {r.voxel_mm:.4g} mm")
@@ -3915,7 +3961,7 @@ class ReconUI(tk.Tk):
                 elif mode == "Existing radial Gaussian" or params["use_psf"].get():
                     psf = make_psf_kernel(float(params["fwhm"].get()), srange / sino.shape[1])
             if method in ("osem", "mlem"):
-                auto_floor = 0.005 if mode == "Analytical detector response" else 0.0
+                auto_floor = 0.005 if automatic_psf or mode == "Analytical detector response" else 0.0
                 floor_control = params.get("sensitivity_pct")
                 floor = str(floor_control.get()).strip().lower() if floor_control else "0"
                 sensitivity_floor = auto_floor if floor == "auto" else float(floor) / 100
@@ -3953,8 +3999,9 @@ class ReconUI(tk.Tk):
                     if regions is None:
                         reference = run(min(4, max(iterations)), 1)
                         support = None
-                        if response is not None and response.doi is not None:
-                            sensitivity = np.asarray(response.doi.sum(axis=0)).reshape(reference.shape[1:])
+                        if response is not None:
+                            _, backproject = response.operators()
+                            sensitivity = backproject(norm if norm is not None else np.ones(sino.shape[1:]))
                             support = sensitivity > sensitivity.max() * sensitivity_floor
                         regions = detect_source_regions(
                             reference, spacing,
@@ -4026,6 +4073,8 @@ class ReconUI(tk.Tk):
             if response is not None:
                 rec["geometry"]["detector_response"] = response.metadata
                 rec["info"] += f" · {mode}"
+            if auto_lut is not None:
+                rec["psf_lut_bytes"] = auto_lut
             if method == "fbp":
                 rec["fbp"] = {
                     "window": window, "cutoff_nyquist": cutoff,

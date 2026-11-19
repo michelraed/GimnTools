@@ -16,7 +16,7 @@ class _Settings(simpledialog.Dialog):
         ("511 keV μ (mm⁻¹)", "doi_mu"),
         ("Active segment width (mm)", "doi_face"),
         ("Face quadrature", "doi_face_order"),
-        ("Depth quadrature", "doi_depth_order"),
+        ("Depth order (auto / 1–12)", "doi_depth_order"),
         ("Source samples per axis", "5"),
         ("Kernel half width (samples)", "2"),
         ("Kernel step (voxels)", "1"),
@@ -121,8 +121,16 @@ def show_lut(panel, path, result):
         f"x {x:.2f} mm, y {y:.2f} mm" for y in result["y_mm"] for x in result["x_mm"]
     ])
     selection.pack(fill=tk.X)
-    figure = Figure(figsize=(7.4, 3.1), layout="constrained")
-    image, profiles = figure.subplots(1, 2)
+    figure = Figure(figsize=(10, 3.6), layout="constrained")
+    image, profiles, coverage = figure.subplots(1, 3)
+    efficiency = result["source_efficiency"]
+    half_fov = float(result["reference_grid"][1]) / 2
+    coverage.imshow(efficiency, cmap="magma", origin="lower", extent=[-half_fov, half_fov] * 2)
+    coverage.set(title="Predicted efficiency", xlabel="X (mm)", ylabel="Y (mm)")
+    nominal_marker, = coverage.plot([], [], marker="x", color="#62d0fa", linestyle="none", label="LUT node")
+    fitted_marker, = coverage.plot([], [], marker="o", markerfacecolor="none", color="white",
+                                   linestyle="none", label="Fit location")
+    coverage.legend(loc="upper right", fontsize=8)
     canvas = plot_canvas(panel.app, figure, window)
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
     stats = ttk.Label(window, wraplength=700)
@@ -144,6 +152,12 @@ def show_lut(panel, path, result):
         wx, wy = summary["fwhm"]
         error = result["relative_error"][iy, ix]
         extra = "\nHigh residual. Prefer the analytical operator directly." if error > 0.30 else ""
+        x, y = result["x_mm"][ix], result["y_mm"][iy]
+        fit_x, fit_y = result["fit_positions_mm"][iy, ix]
+        nominal_marker.set_data([x], [y])
+        fitted_marker.set_data([fit_x], [fit_y])
+        if x != fit_x or y != fit_y:
+            extra += f"\nAdjusted fit location ({fit_x:.2f}, {fit_y:.2f}) mm · node efficiency {result['efficiency'][iy, ix]:.3g}"
         stats.configure(text=f"Centroid ({cx:.2f}, {cy:.2f}) mm · FWHM ({wx:.2f}, {wy:.2f}) mm\n"
                              f"Asymmetry {summary['asymmetry']:.3f} · Fit error {error:.1%} · "
                              f"{result['elapsed_seconds']:.1f} s{extra}")
