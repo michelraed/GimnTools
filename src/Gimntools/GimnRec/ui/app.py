@@ -47,9 +47,7 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import (
-    FigureCanvasTkAgg, NavigationToolbar2Tk,
-)
+from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 try:
     _ALL_CMAPS = sorted(plt.colormaps())
@@ -62,7 +60,7 @@ from Gimntools.GimnRec.detector_response import (
     crystal_material, crystal_response_settings,
 )
 from Gimntools.GimnRec.storage import Store
-from Gimntools.GimnRec.ui.rendering import show_image
+from Gimntools.GimnRec.ui.rendering import plot_canvas, show_image
 from Gimntools.GimnRec.filters import FBP_WINDOWS, PAD_MODES, resolve_pad_length
 
 
@@ -379,7 +377,7 @@ _COMMON_SCALARS = [  # (key, label, kind)
     ("Half_FOV",       "Half_FOV (mm)",      "float"),
     ("sino_range_mm",  "sino_range_mm (mm)", "float"),
     ("crystal_face_width_mm", "Segment face (mm)", "float"),
-    ("mu_511_mm_inv", "μ override (mm⁻¹)", "float"),
+    ("mu_511_mm_inv", "Mu override (1/mm)", "float"),
 ]
 _PETSYS_SCALARS = [
     ("e_min",          "e_min (keV)",        "float"),
@@ -417,25 +415,25 @@ class DetectorConfigForm(ttk.LabelFrame):
         scalars = _COMMON_SCALARS + ([] if self.fmt == "gate" else _PETSYS_SCALARS)
 
         form = ttk.Frame(self); form.pack(fill=tk.X)
-        r = 0
-        for key, values in combos:
+        themed = bool(getattr(app, "appearance", None))
+        fields = [(key, key, values) for key, values in combos]
+        fields += [(key, label, None) for key, label, _ in scalars + _CFG_ARRAYS]
+        height = (len(fields) + 1) // 2 if themed else len(fields)
+        for index, (key, label, values) in enumerate(fields):
+            column, row = divmod(index, height)
             self.vars[key] = tk.StringVar(value=_CFG_DEFAULTS.get(key, ""))
-            ttk.Label(form, text=key, width=16).grid(row=r, column=0, sticky="w", pady=1)
-            ttk.Combobox(form, textvariable=self.vars[key], values=values,
-                         state="readonly", width=22).grid(row=r, column=1, sticky="w")
-            r += 1
-        for key, label, _k in scalars:
-            self.vars[key] = tk.StringVar(value=_CFG_DEFAULTS.get(key, ""))
-            ttk.Label(form, text=label, width=16).grid(row=r, column=0, sticky="w", pady=1)
-            ttk.Entry(form, textvariable=self.vars[key], width=24).grid(
-                row=r, column=1, sticky="w")
-            r += 1
-        for key, label, _k in _CFG_ARRAYS:
-            self.vars[key] = tk.StringVar(value=_CFG_DEFAULTS.get(key, ""))
-            ttk.Label(form, text=label, width=16).grid(row=r, column=0, sticky="w", pady=1)
-            ttk.Entry(form, textvariable=self.vars[key], width=24).grid(
-                row=r, column=1, sticky="w")
-            r += 1
+            ttk.Label(form, text=label, width=22 if themed else 16).grid(
+                row=row, column=column * 2, sticky="w", pady=1,
+                padx=(18 if themed and column else 0, 0))
+            if values is None:
+                field = ttk.Entry(form, textvariable=self.vars[key], width=24)
+            else:
+                field = ttk.Combobox(form, textvariable=self.vars[key], values=values,
+                                     state="readonly", width=22)
+            field.grid(row=row, column=column * 2 + 1, sticky="ew" if themed else "w")
+        if themed:
+            for column in (1, 3):
+                form.columnconfigure(column, weight=1, uniform="entry")
 
         btns = ttk.Frame(self); btns.pack(fill=tk.X, pady=4)
         ttk.Button(btns, text="Load JSON…", command=self._load).pack(side=tk.LEFT, padx=2)
@@ -696,13 +694,18 @@ class GatePanel(ttk.Frame):
     def __init__(self, master, app):
         super().__init__(master, padding=6)
         self.app = app
+        content = self
+        if getattr(app, "appearance", None):
+            scroll = ScrollableColumn(self, max_width=1400)
+            scroll.pack(fill=tk.BOTH, expand=True)
+            content = scroll.body
 
-        self.profile = AcquisitionProfilePicker(self, app, "gate")
+        self.profile = AcquisitionProfilePicker(content, app, "gate")
         self.profile.pack(fill=tk.X, pady=2)
-        self.cfg_form = DetectorConfigForm(self, app, "gate")
+        self.cfg_form = DetectorConfigForm(content, app, "gate")
         self.cfg_form.pack(fill=tk.X, pady=3)
 
-        box_files = ttk.LabelFrame(self, text="GATE data", padding=6)
+        box_files = ttk.LabelFrame(content, text="GATE data", padding=6)
         box_files.pack(fill=tk.X, pady=3)
         self.var_root = tk.StringVar()
         file_picker(box_files, "ROOT GATE", self.var_root)
@@ -717,14 +720,14 @@ class GatePanel(ttk.Frame):
         labeled_spin(box_files, "n_dist_out", self.var_ndist, 16, 1024)
         labeled_spin(box_files, "angular_sigma", self.var_asigma, 0.0, 10.0, is_double=True)
 
-        self.angles = AngleRsectorPanel(self, log_fn=app.log, default_n=12)
+        self.angles = AngleRsectorPanel(content, log_fn=app.log, default_n=12)
         self.angles.pack(fill=tk.BOTH, expand=True, pady=3)
 
-        rown = ttk.Frame(self); rown.pack(fill=tk.X)
+        rown = ttk.Frame(content); rown.pack(fill=tk.X)
         ttk.Label(rown, text="sinogram name", width=16).pack(side=tk.LEFT)
         self.var_name = tk.StringVar(value="")
         ttk.Entry(rown, textvariable=self.var_name, width=24).pack(side=tk.LEFT)
-        ttk.Button(self, text="Build sinogram",
+        ttk.Button(content, text="Build sinogram", style="Primary.TButton",
                    command=self._build_async).pack(fill=tk.X, pady=4)
 
     def _build_async(self):
@@ -789,17 +792,22 @@ class PetsysPanel(ttk.Frame):
     def __init__(self, master, app):
         super().__init__(master, padding=6)
         self.app = app
+        content = self
+        if getattr(app, "appearance", None):
+            scroll = ScrollableColumn(self, max_width=1400)
+            scroll.pack(fill=tk.BOTH, expand=True)
+            content = scroll.body
         self.calibration = None
 
-        self.profile = AcquisitionProfilePicker(self, app, "petsys")
+        self.profile = AcquisitionProfilePicker(content, app, "petsys")
         self.profile.pack(fill=tk.X, pady=2)
-        self.cfg_form = DetectorConfigForm(self, app, "petsys")
+        self.cfg_form = DetectorConfigForm(content, app, "petsys")
         self.cfg_form.pack(fill=tk.X, pady=3)
 
-        self.angles = AngleRsectorPanel(self, log_fn=app.log, default_n=12)
+        self.angles = AngleRsectorPanel(content, log_fn=app.log, default_n=12)
         self.angles.pack(fill=tk.X, pady=3)
 
-        sub = ttk.Notebook(self); sub.pack(fill=tk.BOTH, expand=True, pady=3)
+        sub = ttk.Notebook(content); sub.pack(fill=tk.BOTH, expand=True, pady=3)
         self.tab_data = ttk.Frame(sub, padding=4)
         self.tab_cal = ttk.Frame(sub, padding=4)
         sub.add(self.tab_data, text="Data / Sinogram")
@@ -833,7 +841,7 @@ class PetsysPanel(ttk.Frame):
         ttk.Label(rown, text="sinogram name", width=16).pack(side=tk.LEFT)
         self.var_name = tk.StringVar(value="")
         ttk.Entry(rown, textvariable=self.var_name, width=24).pack(side=tk.LEFT)
-        ttk.Button(t, text="Build sinogram",
+        ttk.Button(t, text="Build sinogram", style="Primary.TButton",
                    command=self._build_async).pack(fill=tk.X, pady=4)
 
     def _build_async(self):
@@ -933,7 +941,7 @@ class PetsysPanel(ttk.Frame):
         ttk.Label(t, text="Each row = acquisition with source(s) of KNOWN position "
                   "(mm). 'sources': Sx,Sy pairs separated by ';' (e.g. '0,0' centred | "
                   "'7.5,0' off-centre | '7.5,0;-7.5,0' two sources).",
-                  wraplength=440, foreground="#444").pack(anchor="w", pady=2)
+                  wraplength=440, style="Hint.TLabel").pack(anchor="w", pady=2)
         self.cal_bg = tk.StringVar()
         file_picker(t, "ROOT background", self.cal_bg)
 
@@ -1056,7 +1064,7 @@ class SinogramPanel(ttk.Frame):
         self._dragging = False
         self.fig = Figure(figsize=(7, 5))
         self.ax = self.fig.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        self.canvas = plot_canvas(self.app, self.fig, self)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         NavigationToolbar2Tk(self.canvas, self)
         bind_wheel_slices(self.canvas, self._on_scroll)
@@ -1100,7 +1108,7 @@ class SinogramPanel(ttk.Frame):
                    command=self._estimate).pack(side=tk.LEFT, padx=4)
         ttk.Button(row2, text="Reset to 0",
                    command=lambda: self.var_cor.set(0.0)).pack(side=tk.LEFT)
-        self.cor_info = ttk.Label(cor, foreground="#666", wraplength=620,
+        self.cor_info = ttk.Label(cor, style="Hint.TLabel", wraplength=620,
                                   text="0.000 mm — the line marks where the "
                                        "rotation axis sits on the radial axis. "
                                        "It is applied to the projector "
@@ -1336,7 +1344,7 @@ class ReconstructionPanel(ttk.Frame):
         self.v["doi_material"].trace_add("write", self._set_material_mu)
         self._response_sino_name = None
         labeled_entry(doi, "Segment face (mm)", self.v["doi_face"])
-        labeled_entry(doi, "μ at 511 keV (1/mm)", self.v["doi_mu"])
+        labeled_entry(doi, "Mu 511 (1/mm)", self.v["doi_mu"])
         labeled_entry(doi, "Face quadrature", self.v["doi_face_order"])
         labeled_entry(doi, "Depth quadrature", self.v["doi_depth_order"])
         sv = ttk.Frame(response_box)
@@ -1364,7 +1372,7 @@ class ReconstructionPanel(ttk.Frame):
             from Gimntools.GimnRec.ui.tk_analytical import open_generator
             open_generator(self)
 
-        ttk.Button(response_box, text="Generate analytical LUT…",
+        ttk.Button(response_box, text="Generate analytical LUT...", style="Primary.TButton",
                    command=generate_analytical).pack(fill=tk.X)
 
 
@@ -1389,7 +1397,7 @@ class ReconstructionPanel(ttk.Frame):
                       width=14)
         labeled_spin(fbox, "cutoff (×Nyquist)", self.v["fbp_cutoff"],
                      0.05, 1.0, is_double=True, width=8)
-        self.lbl_cutoff = ttk.Label(fbox, foreground="#666", text="")
+        self.lbl_cutoff = ttk.Label(fbox, style="Hint.TLabel", text="")
         self.lbl_cutoff.pack(anchor="w")
         labeled_spin(fbox, "Butterworth order", self.v["fbp_order"], 1, 20,
                      width=8)
@@ -1405,7 +1413,7 @@ class ReconstructionPanel(ttk.Frame):
                      1, 8, width=8)
         ttk.Checkbutton(fbox, text="legacy FBP scale (pre-0.4.1)",
                         variable=self.v["fbp_legacy_scale"]).pack(anchor="w")
-        ttk.Label(fbox, wraplength=210, foreground="#666",
+        ttk.Label(fbox, wraplength=210, style="Hint.TLabel",
                   text="cutoff is a fraction of the RADIAL Nyquist "
                        "(0.5 cycles/bin); the mm⁻¹ value depends on the bin "
                        "size and is printed in the log. Lowering it trades "
@@ -1430,13 +1438,13 @@ class ReconstructionPanel(ttk.Frame):
                     textvariable=self.v["cor_mm"]).pack(side=tk.LEFT)
         ttk.Button(crow, text="edit on sinogram",
                    command=self._goto_sinogram).pack(side=tk.LEFT, padx=3)
-        ttk.Label(cbox, wraplength=210, foreground="#666",
+        ttk.Label(cbox, wraplength=210, style="Hint.TLabel",
                   text="Constant radial offset of the rotation axis. Set it "
                        "here or by clicking/dragging the green line in the "
                        "Sinogram tab; the two stay in sync. Applied to the "
                        "projector geometry — the sinogram is never "
                        "resampled.").pack(anchor="w", pady=2)
-        ttk.Label(gbox, wraplength=210, foreground="#666",
+        ttk.Label(gbox, wraplength=210, style="Hint.TLabel",
                   text="sinogram = legacy (matrix follows the radial bins). "
                        "matrix/voxel = reconstruct on the grid you ask for, "
                        "from the measured bins. matrix+voxel also redefines "
@@ -1446,7 +1454,7 @@ class ReconstructionPanel(ttk.Frame):
         ttk.Label(rn, text="recon name", width=10).pack(side=tk.LEFT)
         self.var_recon_name = tk.StringVar(value="")
         ttk.Entry(rn, textvariable=self.var_recon_name, width=18).pack(side=tk.LEFT)
-        ttk.Button(ctrl, text="Reconstruct",
+        ttk.Button(ctrl, text="Reconstruct", style="Primary.TButton",
                    command=self._recon_async).pack(fill=tk.X, pady=4)
 
         regbox = ttk.LabelFrame(ctrl, text="Reconstructions", padding=4)
@@ -1472,7 +1480,7 @@ class ReconstructionPanel(ttk.Frame):
         self.ax_ax = self.fig.add_subplot(131)
         self.ax_co = self.fig.add_subplot(132)
         self.ax_sa = self.fig.add_subplot(133)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=view)
+        self.canvas = plot_canvas(self.app, self.fig, view)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         NavigationToolbar2Tk(self.canvas, view)
         bind_wheel_slices(self.canvas, self._on_scroll)
@@ -1480,7 +1488,7 @@ class ReconstructionPanel(ttk.Frame):
         self.ctrl.pack(fill=tk.X, pady=2)
         cc = ttk.Frame(view); cc.pack(fill=tk.X)
         ttk.Label(view, text="(mouse scroll over each view changes the slice)",
-                  foreground="#666").pack(anchor="w")
+                  style="Hint.TLabel").pack(anchor="w")
         self.scales = {}
         for key, lbl in [("z", "Z axial"), ("y", "Y coronal"), ("x", "X sagital")]:
             f = ttk.Frame(cc); f.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=3)
@@ -1916,7 +1924,7 @@ class NemaPanel(ttk.Frame):
         ttk.Label(rs, text="raio(px)").pack(side=tk.LEFT)
         ttk.Entry(rs, textvariable=self.radius, width=6).pack(side=tk.LEFT, padx=2)
         ttk.Label(gr, text="(click = fixed size; drag = variable)",
-                  foreground="#666", font=("", 7)).pack(anchor="w")
+                  style="Hint.TLabel", font=("", 7)).pack(anchor="w")
 
         self.ctrl = ImageControls(left, self.update_image, default_cmap="gray",
                                   default_mode="volume")
@@ -1925,7 +1933,7 @@ class NemaPanel(ttk.Frame):
         center = ttk.Frame(self); center.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.fig = Figure(figsize=(6, 6))
         self.ax = self.fig.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=center)
+        self.canvas = plot_canvas(self.app, self.fig, center)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.canvas.mpl_connect('button_press_event', self.on_click)
         self.canvas.mpl_connect('motion_notify_event', self.on_drag)
@@ -2401,7 +2409,7 @@ class PlotReconPanel(ttk.Frame):
                    command=self._add_selected_as_columns).pack(side=tk.LEFT, padx=1)
         ttk.Button(b, text="Add as a row ↓",
                    command=self._add_selected_as_row).pack(side=tk.LEFT, padx=1)
-        ttk.Label(box, wraplength=300, foreground="#666",
+        ttk.Label(box, wraplength=300, style="Hint.TLabel",
                   text="'Add as columns' makes one column per selected "
                        "reconstruction (the classic side-by-side). "
                        "'Add as a row' makes ONE new image row and fills the "
@@ -2494,10 +2502,10 @@ class PlotReconPanel(ttk.Frame):
 
         # --- preview --------------------------------------------------
         self.fig = Figure(figsize=(8, 6), dpi=100)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=right)
+        self.canvas = plot_canvas(self.app, self.fig, right)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         NavigationToolbar2Tk(self.canvas, right).update()
-        ttk.Label(right, foreground="#666",
+        ttk.Label(right, style="Hint.TLabel",
                   text="(preview is rendered at screen DPI; the exported file "
                        "uses the DPI above)").pack(anchor="w")
         self.refresh_available()
@@ -2554,7 +2562,7 @@ class PlotReconPanel(ttk.Frame):
 
         hdr = ttk.Frame(f); hdr.pack(fill=tk.X)
         ttk.Label(hdr, text=f"{kind}", width=9,
-                  foreground="#036").pack(side=tk.LEFT)
+                  style="Emphasis.TLabel").pack(side=tk.LEFT)
         ttk.Label(hdr, text="supertitle").pack(side=tk.LEFT)
         ttk.Entry(hdr, textvariable=row["title"], width=16).pack(side=tk.LEFT, padx=2)
         ttk.Button(hdr, text="▲", width=2,
@@ -2591,7 +2599,7 @@ class PlotReconPanel(ttk.Frame):
             row["ref_combo"] = ttk.Combobox(s4, textvariable=row["ref_row"],
                                             state="readonly", width=22)
             row["ref_combo"].pack(side=tk.LEFT, padx=1)
-            ttk.Label(f, wraplength=300, foreground="#666",
+            ttk.Label(f, wraplength=300, style="Hint.TLabel",
                       text="The sinogram of each column is looked up from the "
                            "reconstruction in the chosen row, through the "
                            "'source' recorded when it was reconstructed. "
@@ -3160,7 +3168,7 @@ def _f(txt):
 # ===========================================================================
 
 class ReconUI(tk.Tk):
-    def __init__(self, *, image_renderer=None):
+    def __init__(self, *, image_renderer=None, themed=False):
         super().__init__()
         self.image_renderer = image_renderer
         self.title("GimnTools — PET Reconstruction (GATE / PETSYS)")
@@ -3187,9 +3195,19 @@ class ReconUI(tk.Tk):
 
         # local database (SQLite, cross-platform)
         self.store = Store()
+        self.appearance = None
+        if themed:
+            from Gimntools.GimnRec.ui.appearance import DesktopAppearance
+
+            self.appearance = DesktopAppearance(self, self.store)
+            self.minsize(940, 660)
+        else:
+            style = ttk.Style(self)
+            style.configure("Hint.TLabel", foreground="#666")
+            style.configure("Emphasis.TLabel", foreground="#036")
 
         self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=12 if themed else 0)
         self.gate = GatePanel(self.notebook, self)
         self.petsys = PetsysPanel(self.notebook, self)
         self.sino_panel = SinogramPanel(self.notebook, self)
@@ -3205,8 +3223,14 @@ class ReconUI(tk.Tk):
         self.notebook.add(self.nema_panel, text="NEMA FWHM")
         self.notebook.add(self.profiles_panel, text="Profiles")
 
-        self.log_text = tk.Text(self, height=7, state="disabled", font=("monospace", 8))
-        self.log_text.pack(fill=tk.X, side=tk.BOTTOM)
+        self.log_text = tk.Text(self, height=4 if themed else 7,
+                                state="disabled", font=("monospace", 8))
+        if themed:
+            self.log_text.pack(fill=tk.X, side=tk.BOTTOM, before=self.notebook, padx=12, pady=(6, 12))
+        else:
+            self.log_text.pack(fill=tk.X, side=tk.BOTTOM)
+        if self.appearance:
+            self.appearance.apply()
 
         # Files remembered between runs (data pickers)
         self._file_vars = {
@@ -3575,6 +3599,9 @@ class ReconUI(tk.Tk):
                                  f"μ={settings.mu_per_mm:.5g} mm⁻¹, face={settings.face_width_mm:.4g} mm")
                     self.log(f"[{entry['name']}] {mode} (exploratory 2D model)")
                     response = DetectorResponse(r, angles, settings, entry.get("acquisition"))
+                    if use_lut and response.metadata["lut"]["reference_factors_recomputed"]:
+                        self.log(f"[{entry['name']}] LUT acceptance recomputed for "
+                                 f"{r.n_img}×{r.n_img} at {r.voxel_mm:.4g} mm")
                     if norm is not None and response.reference_factors is not None:
                         raise ValueError("Build the sinogram with geometric normalization disabled for an analytical LUT")
                 elif mode == "Existing radial Gaussian" or params["use_psf"].get():
@@ -3669,8 +3696,8 @@ class ReconUI(tk.Tk):
             self.error(traceback.format_exc())
 
 
-def main(*, image_renderer=None):
-    ReconUI(image_renderer=image_renderer).mainloop()
+def main(*, image_renderer=None, themed=False):
+    ReconUI(image_renderer=image_renderer, themed=themed).mainloop()
 
 
 if __name__ == "__main__":

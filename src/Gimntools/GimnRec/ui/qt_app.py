@@ -72,4 +72,4 @@ class VTKImageRenderer:
 def main():
     from Gimntools.GimnRec.ui.app import main as run_desktop
 
-    return run_desktop(image_renderer=VTKImageRenderer())
+    return run_desktop(image_renderer=VTKImageRenderer(), themed=True)

@@ -7,3 +7,10 @@ def show_image(app, axes, data, **kwargs):
     if renderer is not None:
         renderer.attach(artist)
     return artist
+
+
+def plot_canvas(app, figure, master):
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+    appearance = getattr(app, "appearance", None)
+    return appearance.canvas(figure, master) if appearance else FigureCanvasTkAgg(figure, master)

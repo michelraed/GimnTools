@@ -8,7 +8,7 @@ from Gimntools.GimnRec.detector_response import (
     CRYSTAL_MATERIALS, CRYSTAL_MU_511, crystal_response_settings,
 )
 from Gimntools.GimnRec.reconstructor import siddon_reconstructor
-from Gimntools.GimnRec.ui.rendering import show_image
+from Gimntools.GimnRec.ui.rendering import plot_canvas, show_image
 
 
 class _Settings(simpledialog.Dialog):
@@ -109,7 +109,6 @@ def open_generator(panel):
 
 
 def show_lut(panel, path, result):
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
     from matplotlib.figure import Figure
 
     panel.v["sv_lut"].set(path)
@@ -122,7 +121,7 @@ def show_lut(panel, path, result):
     selection.pack(fill=tk.X)
     figure = Figure(figsize=(7.4, 3.1), layout="constrained")
     image, profiles = figure.subplots(1, 2)
-    canvas = FigureCanvasTkAgg(figure, master=window)
+    canvas = plot_canvas(panel.app, figure, window)
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
     stats = ttk.Label(window, wraplength=700)
     stats.pack(fill=tk.X)

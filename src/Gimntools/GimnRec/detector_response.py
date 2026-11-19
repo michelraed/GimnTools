@@ -498,13 +498,9 @@ def lut_reference_grid(recon):
                        recon.cor_mm, recon.dx_cor_mm, recon.dy_cor_mm])
 
 
-def _verify_lut_acquisition(provenance, current):
+def _verify_lut_acquisition(original, current):
     if not current:
         return
-    try:
-        original = json.loads(provenance)["analytical_geometry"]
-    except (TypeError, ValueError, KeyError) as exc:
-        raise ValueError("Analytical LUT is missing its acquisition provenance") from exc
     geometry_keys = ("data_from", "process_as", "crystal_type", "rotate_along",
                      "radius", "pla_thickness", "crystal_size", "sipm_pitch",
                      "sipm_pixel_n", "det_z_rotation")
@@ -543,22 +539,47 @@ def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
             raise ValueError("SV-PSF kernels must be finite, nonnegative and shaped (y,x,dy,dx)")
         if not np.allclose(kernels.sum(axis=(2, 3)), 1.0, rtol=1e-6, atol=1e-8):
             raise ValueError("Every SV-PSF kernel must sum to 1")
+        n = recon.n_img
+        if n * n * len(dx) * len(dy) > 5_000_000:
+            raise ValueError("SV-PSF matrix exceeds the sparse size limit. Reduce the image grid or LUT support")
         factors = None
+        factors_recomputed = False
         if "reference_factors" in lut:
             factors = np.asarray(lut["reference_factors"], dtype=float)
             expected = lut_reference_grid(recon)
-            if (not contains_doi.item() or
-                    factors.shape != (recon.n_dist, recon.n_ang) or
-                    not np.isfinite(factors).all() or np.any(factors < 0) or
-                    "reference_grid" not in lut or "reference_angles_deg" not in lut or
-                    not np.array_equal(lut["reference_grid"], expected) or
-                    lut["reference_angles_deg"].shape != angles_deg.shape or
-                    not np.allclose(lut["reference_angles_deg"], angles_deg, rtol=0, atol=1e-8)):
-                raise ValueError("Analytical LUT reference must match the original image and sinogram geometry")
-            _verify_lut_acquisition(provenance.item(), acquisition)
-    n = recon.n_img
-    if n * n * len(dx) * len(dy) > 5_000_000:
-        raise ValueError("SV-PSF matrix exceeds the sparse size limit. Reduce the image grid or LUT support")
+            grid = np.asarray(lut["reference_grid"], dtype=float) if "reference_grid" in lut else None
+            if (not contains_doi.item()
+                    or factors.shape != (recon.n_dist, recon.n_ang)
+                    or not np.isfinite(factors).all() or np.any(factors < 0)
+                    or grid is None or grid.shape != expected.shape or not np.isfinite(grid).all()
+                    or "reference_angles_deg" not in lut
+                    or lut["reference_angles_deg"].shape != angles_deg.shape
+                    or not np.allclose(lut["reference_angles_deg"], angles_deg, rtol=0, atol=1e-8)
+                    or not np.allclose(grid[[0, 4, 5, 6]], expected[[0, 4, 5, 6]], rtol=0, atol=1e-8)):
+                raise ValueError("Analytical LUT reference must match the original sinogram grid and COR")
+            try:
+                saved = json.loads(provenance.item())
+                original = saved["analytical_geometry"]
+                if not isinstance(original, dict):
+                    raise TypeError("analytical_geometry must be a mapping")
+            except (TypeError, ValueError, KeyError) as exc:
+                raise ValueError("Analytical LUT is missing its acquisition provenance") from exc
+            _verify_lut_acquisition(original, acquisition)
+            if not np.allclose(grid[1:4], expected[1:4], rtol=0, atol=1e-8):
+                if not acquisition:
+                    raise ValueError("Build the sinogram from ROOT to verify the acquisition before "
+                                     "using an analytical LUT on a different image grid")
+                try:
+                    settings = ResponseSettings(**saved["settings"])
+                except (TypeError, KeyError) as exc:
+                    raise ValueError("Analytical LUT is missing the settings needed to adapt it to "
+                                     "a different image grid. Generate the LUT again") from exc
+                from Gimntools.GimnRec.analytical_response import (
+                    analytical_projection_matrix, analytical_reference_factors,
+                )
+                factors = analytical_reference_factors(
+                    recon, angles_deg, analytical_projection_matrix(recon, angles_deg, settings, original))
+                factors_recomputed = True
     bins = recon.img_min + (np.arange(n) + 0.5) * recon.img_pixel
     # Linear interpolation on the calibrated source grid. Singleton axes
     # are constant and out-of-range sources use the nearest calibrated edge.
@@ -603,7 +624,8 @@ def _sv_matrix(recon, angles_deg, path, compose_doi, acquisition):
         raise ValueError("SV-PSF LUT has no support within the reconstructed image grid")
     metadata = dict(sha256=hashlib.sha256(content).hexdigest(),
                     provenance=provenance.item(), doi_included=contains_doi.item(),
-                    uses_reference_factors=factors is not None)
+                    uses_reference_factors=factors is not None,
+                    reference_factors_recomputed=factors_recomputed)
     return matrix, factors, metadata
 
 
@@ -631,6 +653,10 @@ class DetectorResponse:
             self.sv, self.reference_factors, self.metadata["lut"] = _sv_matrix(
                 recon, self.angles, settings.lut_path, use_doi, acquisition)
 
+            if self.metadata["lut"]["reference_factors_recomputed"]:
+                warnings.warn("Analytical LUT acceptance was recomputed for this image grid. "
+                              "The original fit error only describes the grid used to fit the kernels.",
+                              stacklevel=2)
             warnings.warn("SV-PSF is exploratory until the LUT is independently calibrated "
                           "for this scanner and reconstruction model", stacklevel=2)
         if settings.analytical:

@@ -35,6 +35,15 @@ def analytical_projection_matrix(recon, angles_deg, settings, acquisition):
     return matrix
 
 
+def analytical_reference_factors(recon, angles_deg, matrix):
+    """Match the uniform-field projection on the requested image grid."""
+    uniform = recon._project(np.ones((recon.n_img, recon.n_img)),
+                             np.deg2rad(angles_deg))
+    analytical_uniform = np.asarray(matrix.sum(axis=1)).reshape(uniform.shape)
+    return np.divide(analytical_uniform, uniform, out=np.zeros_like(uniform),
+                     where=uniform > 0)
+
+
 def _fit_kernel(reference, target, support, regularization):
     """Constrained kernel fit with the nonnegative amplitude eliminated analytically."""
     scale = np.linalg.norm(target)
@@ -114,12 +123,8 @@ def generate_analytical_lut(recon, angles_deg, settings, acquisition, path, *,
     start = perf_counter()
     matrix = analytical_projection_matrix(recon, angles_deg, settings, acquisition).tocsc()
     angles_rad = np.deg2rad(angles_deg)
-    uniform = recon._project(np.ones((n, n)), angles_rad).ravel()
-    analytical_uniform = np.asarray(matrix.sum(axis=1)).ravel()
-    # The reference models the mean acceptance of each measured bin for a
-    # uniform field. Features attributable to spatial blur are fitted below.
-    reference_factors = np.divide(analytical_uniform, uniform, out=np.zeros_like(uniform),
-                                  where=uniform > 0)
+    reference_factors = analytical_reference_factors(recon, angles_deg, matrix)
+    weighted_factors = reference_factors.ravel() * sqrt_weights
     mesh = (np.array([n // 2]) if sample_count == 1 else
             np.rint(np.linspace(margin, n - 1 - margin, sample_count)).astype(int))
     offset = np.arange(-half_support, half_support + 1) * kernel_stride
@@ -131,7 +136,7 @@ def generate_analytical_lut(recon, angles_deg, settings, acquisition, path, *,
     def reference_column(iy, ix):
         image = np.zeros((n, n))
         image[iy, ix] = 1
-        return recon._project(image, angles_rad).ravel() * reference_factors * sqrt_weights
+        return recon._project(image, angles_rad).ravel() * weighted_factors
 
     shape = (mesh.size, mesh.size)
     kernels = np.empty((*shape, width, width))
@@ -162,7 +167,7 @@ def generate_analytical_lut(recon, angles_deg, settings, acquisition, path, *,
     result = dict(x_mm=axis, y_mm=axis, dx_mm=delta, dy_mm=delta, kernels=kernels,
                   provenance=provenance, doi_included=True, fit_scale=amplitude,
                   relative_error=error, efficiency=efficiency,
-                  reference_factors=reference_factors.reshape(recon.n_dist, recon.n_ang),
+                  reference_factors=reference_factors,
                   reference_angles_deg=np.asarray(angles_deg),
                   reference_grid=lut_reference_grid(recon),
                   elapsed_seconds=perf_counter() - start)

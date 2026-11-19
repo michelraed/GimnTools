@@ -264,8 +264,13 @@ nonnegative amplitude eliminated analytically. `kernel_stride` sets the
 kernel sampling in integer voxel steps. The saved NPZ includes the
 fitted amplitude, analytical efficiency, relative error, processing time
 and provenance. The NPZ also stores the matched reference acceptance
-and its grid. Use this kernel with the same image and sinogram geometry.
-The normalized kernel alone does not carry efficiency.
+and its grid. To reuse this LUT with a different matrix, voxel size or
+image field, build the sinogram from the matching acquisition and choose
+the target image grid. GimnTools deposits the kernel offsets in mm onto the
+new grid and recomputes the uniform-field bin acceptance. The sinogram
+grid, detector setup, poses and COR must still match. The fit error in the
+saved file measures the original grid. Refit on the target grid to measure
+the error there. The normalized kernel alone does not carry efficiency.
 The preview shows a sampled kernel, X/Y marginal profiles, centroid,
 reflection asymmetry, fit error and FWHM where both half-height crossings
 are sampled. Fits with large projection error should use the direct

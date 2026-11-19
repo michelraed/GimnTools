@@ -243,6 +243,8 @@ with the same controls for acquisition, calibration, reconstruction, NEMA,
 profiles and LUT generation. Both read and write the same SQLite database.
 Set `GIMNTOOLS_DB` to the path of an existing database to share it across
 different installations.
+In the VTK launcher, switch between **Light** and **Dark** in the header.
+The choice is saved per database for the next session.
 
 GUI tabs support GATE and PETSYS input, sinogram visualization, EM/FBP
 reconstruction, orthogonal display, profile analysis and FWHM analysis.

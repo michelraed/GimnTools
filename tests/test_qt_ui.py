@@ -126,3 +126,60 @@ def test_tk_and_vtk_share_tabs_profiles_and_session(tmp_path, monkeypatch):
         assert tk.petsys.angles.get_rsectors() == rsectors
     finally:
         tk.destroy()
+
+
+def test_vtk_desktop_theme_applies_to_controls_and_plots_and_persists(tmp_path, monkeypatch):
+    if os.name != "nt" and not os.environ.get("DISPLAY"):
+        pytest.skip("The desktop interface requires a display")
+    renderer = _vtk_renderer()
+    from matplotlib.colors import to_rgba
+    from tkinter import ttk
+    from Gimntools.GimnRec.ui.app import ReconUI
+
+    monkeypatch.setenv("GIMNTOOLS_DB", str(tmp_path / "appearance.db"))
+    app = ReconUI(image_renderer=renderer, themed=True)
+    dark = app.appearance.palette
+    tabs = app.notebook.tabs()
+    try:
+        assert app.appearance.mode.get() == "dark"
+        assert app.log_text.cget("background") == dark["surface"]
+        data = np.arange(42).reshape(1, 6, 7)
+        app.set_sinogram(data, fov_mm=50, sino_range_mm=26.88, source="PETSYS")
+        app.sino_panel.draw()
+        app.sino_panel.canvas.draw()
+        ax = app.sino_panel.ax
+        assert ax.get_facecolor() == to_rgba(dark["surface"])
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        light_button = next(widget for widget in descendants(app)
+                            if isinstance(widget, ttk.Radiobutton)
+                            and widget.cget("style") == "Theme.TRadiobutton"
+                            and widget.cget("value") == "light")
+        light_button.invoke()
+        app.sino_panel.canvas.draw()
+        light = app.appearance.palette
+        assert app.appearance.mode.get() == "light"
+        assert light != dark
+        assert app.log_text.cget("background") == light["surface"]
+        assert ax.get_facecolor() == to_rgba(light["surface"])
+        np.testing.assert_array_equal(ax.images[0].get_array(), data[0])
+        assert app.notebook.tabs() == tabs
+        assert app.store.get_setting("vtk_desktop_theme") == "light"
+    finally:
+        app.destroy()
+
+    reopened = ReconUI(image_renderer=renderer, themed=True)
+    try:
+        assert reopened.appearance.mode.get() == "light"
+    finally:
+        reopened.destroy()
+    classic = ReconUI()
+    try:
+        assert classic.appearance is None
+        assert classic.store.get_setting("vtk_desktop_theme") == "light"
+    finally:
+        classic.destroy()

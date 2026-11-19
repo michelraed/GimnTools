@@ -513,6 +513,32 @@ def test_analytical_large_fov_keeps_grid_and_clips_to_detector_gap(tmp_path):
         assert fitting["reference_grid"][1] == 70
     assert signals[0] != pytest.approx(signals[1])
 
+    # A LUT fitted to the default 15×15 image is still usable at 0.84 mm.
+    with pytest.warns(UserWarning, match="finer than the radial sampling"):
+        fine = siddon_reconstructor(
+            r.sinogram, n_img=70, voxel_mm=0.84, sino_range_mm=r.sino_range, verbose=False)
+    path = tmp_path / "LYSO.npz"
+    lut_settings = ResponseSettings(lut_path=str(path))
+    with pytest.raises(ValueError, match="Build the sinogram from ROOT"):
+        DetectorResponse(fine, angles, lut_settings)
+    with pytest.warns(UserWarning, match="was recomputed"):
+        response = DetectorResponse(fine, angles, lut_settings, geometry)
+    assert response.metadata["lut"]["reference_factors_recomputed"]
+    with np.load(path, allow_pickle=False) as original:
+        assert not np.allclose(response.reference_factors, original["reference_factors"])
+    for subset in (None, np.arange(0, fine.n_ang, 4)):
+        forward, back = response.operators(subset)
+        rng = np.random.default_rng(31)
+        image = rng.random((70, 70))
+        predicted = forward(image)
+        y = rng.random(predicted.shape)
+        np.testing.assert_allclose(np.vdot(predicted, y), np.vdot(image, back(y)), rtol=1e-12)
+    fine.sinogram[0] = response.operators()[0](image)
+    reconstructed = fine.osem(
+        angles, iterations=3, subsets_n=4, response=response, verbose=False)
+    assert reconstructed.shape == (1, 70, 70)
+    assert np.isfinite(reconstructed).all() and reconstructed.max() > 0
+
 
 def test_crystal_presets_use_profile_or_explicit_override():
     from Gimntools.GimnRec.detector_response import crystal_response_settings
