@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "GimnTools"
-version = "2.0.0"
+version = "2.1.0"
 authors = [{ name = "Michel David Raed", email = "michelraed@gmail.com" }]
 description = "Research toolkit for preclinical PET sinogram generation and tomographic reconstruction (PETSYS/GATE)"
 readme = { file = "README.md", content-type = "text/markdown" }

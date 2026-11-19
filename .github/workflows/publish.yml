@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   build:
-    if: github.event.release.tag_name == 'v2.0.0'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,10 +18,14 @@ jobs:
       - name: Verify release metadata
         run: |
           python - <<'PY'
-          import pathlib, tomllib
+          import os, pathlib, tomllib
           metadata = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
-          assert metadata["project"]["name"] == "GimnTools"
-          assert metadata["project"]["version"] == "2.0.0"
+          project = metadata["project"]
+          if project["name"] != "GimnTools":
+              raise SystemExit("Expected the GimnTools project")
+          expected_tag = f"v{project['version']}"
+          if os.environ["GITHUB_REF_NAME"] != expected_tag:
+              raise SystemExit(f"Release tag must match pyproject.toml ({expected_tag})")
           PY
       - name: Build release
         run: |

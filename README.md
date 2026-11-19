@@ -1,7 +1,7 @@
 # GimnTools
 
 **Research-oriented small object PET reconstruction — PETSYS and GATE**  
-**Version:** 2.0.0 · **Python:** 3.10+ · **License:** MIT · **Author:** Michel David Raed
+**Version:** 2.1.0 · **Python:** 3.10+ · **License:** MIT · **Author:** Michel David Raed
 
 GimnTools is an open-source Python toolkit for creating sinograms from
 coincidence events and reconstructing **slice-wise 2-D PET images** from
@@ -60,7 +60,7 @@ installers. On headless Linux servers use the CLI; do not run the GUI.
 locally even if the PyPI project does not exist yet):
 
 ```bash
-python -m pip install GimnTools==2.0.0
+python -m pip install GimnTools==2.1.0
 ```
 
 **From the project directory** (editable development checkout):
@@ -72,7 +72,7 @@ python -m pip install -e .
 **From the wheel** distributed in this release:
 
 ```bash
-python -m pip install ./dist/gimntools-2.0.0-py3-none-any.whl
+python -m pip install ./dist/gimntools-2.1.0-py3-none-any.whl
 ```
 
 We recommend an isolated environment to avoid incompatible scientific
@@ -313,7 +313,7 @@ presentations that use its outputs**, indicating the exact version. The
 recommended software citation is:
 
 > Raed, M. D. (2026). *GimnTools: Tomographic Reconstruction Toolkit for
-> Preclinical PET* (Version 2.0.0) [Computer software].
+> Preclinical PET* (Version 2.1.0) [Computer software].
 
 BibTeX (add a repository URL and archival DOI when these exist):
 
@@ -322,7 +322,7 @@ BibTeX (add a repository URL and archival DOI when these exist):
   author = {Raed, Michel David},
   title = {GimnTools: Tomographic Reconstruction Toolkit for Preclinical PET},
   year = {2026},
-  version = {2.0.0},
+  version = {2.1.0},
   note = {Computer software; MIT License}
 }
 ```

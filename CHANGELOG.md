@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.0
+
+- Added optional depth-of-interaction modeling and spatially varying PSF for MLEM and OSEM in PETSYS and GATE.
+- Added GUI and CLI controls, LUT validation, and detector response provenance in exports.
+- Added synthetic numerical verification and a point-source benchmark. Scanner-specific validation requires independent calibration data.
+
 ## 2.0.0 — Public release
 
 - Unified PyPI distribution name: `GimnTools` (previous internal distribution name `GimnToolsV2`).
