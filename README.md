@@ -249,6 +249,22 @@ The choice is saved per database for the next session.
 GUI tabs support GATE and PETSYS input, sinogram visualization, EM/FBP
 reconstruction, orthogonal display, profile analysis and FWHM analysis.
 Loading or acquisition changes should be checked before exporting results.
+The **DICOM** tab exports the selected reconstruction as one PET DICOM
+series. Enter a study name and choose an equipment name, which defaults
+to `GIMN_PET`. The series stores the volume spacing and orientation, and
+uses a common linear rescale for unitless reconstructed intensities.
+
+Use **Build multiple ROOTs…** within the corresponding acquisition tab
+to build several sinograms in one batch. PETSYS reads the distinct positions
+from `angleGantry_1`. GATE counts the recorded `runID`s and retains the
+configured step to map those IDs into angles. Names include `_rotang_<n>`.
+In the **Sinogram** tab, use **Save sinograms…** to export one or more
+portable NPZ files and **Load sinograms…** to open them. The archives carry
+counts, acquisition metadata and calibration, so they can be reconstructed
+without the ROOTs. **Reconstruct batch…** applies the selected image grid
+and method to the selection in sequence, preserving each sinogram's detector
+setup and COR.
+
 Tkinter needs an available graphical display. First Numba compilation can be
 slow. In case of GUI problems, first reproduce the computation with the CLI.
 

@@ -27,6 +27,7 @@ dependencies = [
   "numba>=0.56",
   "uproot>=5.0",
   "SimpleITK>=2.1",
+  "pydicom>=3.0",
 ]
 
 [project.optional-dependencies]

@@ -121,10 +121,13 @@ GimnROOT channel branches retain the nominal-grid check. Inconsistent
 channel/index data, continuously changing translations and same-head
 coincidences remain incompatible with DOI.
 
-For GATE, build the sinogram in `CrystalID` mode. DOI requires all
-configured poses in the input ROOT and a raw, unrebinned sinogram.
-MLEM/OSEM report an error for positive counts in bins with neither modeled
-sensitivity nor background.
+Build a raw, unrebinned sinogram. The desktop derives the PETSYS pose
+count from the recorded `angleGantry_1` values. For GATE, use `CrystalID`
+mode. The detector model uses the observed run IDs with their original
+angular step and assumes equal exposure across those runs. A missing run
+ID cannot distinguish an absent exposure from an exposure with zero
+recorded events. MLEM/OSEM report an error for positive counts in bins
+with neither modeled sensitivity nor background.
 
 [GimnROOT coincidence writer](https://github.com/michelraed/GimnRoot/blob/31b862ff72ca9aefc15a54c32990568c29576871/source/92-TomoProcessing/ProcessAcquisition.C#L2748)
 · [GimnROOT channel map](https://github.com/michelraed/GimnRoot/blob/31b862ff72ca9aefc15a54c32990568c29576871/source/2-histograms/SiPM.C#L332)
@@ -179,7 +182,10 @@ toolkit marks imported LUT reconstructions as exploratory.
 - Either CLI enables DOI with `--crystal-material LYSO` or
   `--crystal-material BGO`. Override the material coefficient and active
   width with `--doi-mu-mm-inv` and `--doi-face-mm`.
-  `--doi-face-order` and `--doi-depth-order` default to 3. Use
+  `--doi-face-order` and `--doi-depth-order` default to 3 on the CLI.
+  The desktop defaults to **Auto** for the face order. Auto chooses an order
+  from 3 to 12 based on the face intervals and voxel width. It is also
+  available via `--doi-face-order auto`. Use
   `--sv-psf-lut path.npz` for SV-PSF alone or alongside DOI. Legacy EM
   and the existing radial PSF are separate options.
 - Python callers can pass `ResponseSettings` as `detector_response` to
@@ -297,3 +303,20 @@ protocol.
 · [Iriarte et al. (2009)](https://doi.org/10.1088/0031-9155/54/7/004)
 · [Pratx and Levin (2011)](https://doi.org/10.1088/0031-9155/56/13/018)
 · [Gravel et al. (2019)](https://doi.org/10.1088/1361-6560/ab4914)
+
+
+### Interpreting dark patches in a reconstruction
+
+The analytical projector uses discrete quadrature rays through the crystal
+faces and depths. The **rays/bin** setting belongs to the conventional
+Siddon projector. A finer image grid can show sampling variations more
+clearly when the analytical quadrature order is kept fixed. The **Auto**
+face order tracks voxel size. Depth order remains a separate setting.
+
+The SV-PSF path spreads each pixel contribution through the LUT before
+projecting. Smoother appearance can reflect that mixing. Low counts and
+OSEM subset updates can also drive some voxels to low or zero values.
+Compare the same slice and intensity limits, and compare OSEM to MLEM
+with the same analytical model to isolate the effect of subsets. The
+**EM relaxation** control can damp an OSEM update. The default of 1 uses
+the full update.

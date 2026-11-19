@@ -23,7 +23,7 @@ class ResponseSettings:
 
     mu_per_mm: float | None = None
     face_width_mm: float | None = None
-    face_order: int = 3
+    face_order: int | str = 3
     depth_order: int = 3
     lut_path: str | None = None
     analytical: bool = False
@@ -69,11 +69,12 @@ def crystal_response_settings(config, *, material=None, mu=None, face=None,
         return number
 
     try:
-        face_order, depth_order = int(str(face_order)), int(str(depth_order))
+        face_order = "auto" if str(face_order).strip().lower() == "auto" else int(str(face_order))
+        depth_order = int(str(depth_order))
     except ValueError as exc:
-        raise ValueError("Face and depth quadrature orders must be integers in [1, 12]") from exc
-    if not (1 <= face_order <= 12 and 1 <= depth_order <= 12):
-        raise ValueError("Face and depth quadrature orders must be integers in [1, 12]")
+        raise ValueError("Use Auto for the face order or enter quadrature orders from 1 to 12") from exc
+    if not ((face_order == "auto" or 1 <= face_order <= 12) and 1 <= depth_order <= 12):
+        raise ValueError("Use Auto for the face order or enter quadrature orders from 1 to 12")
     return ResponseSettings(positive(mu, "511 keV attenuation coefficient in mm⁻¹"),
                             positive(face, "segment face width in mm"),
                             face_order, depth_order, lut_path, analytical, material)
@@ -279,7 +280,10 @@ def _nominal_pairs(acquisition, sino_shape, sino_range, face_width, *, analytic=
     if not poses.size or not np.isfinite(poses).all():
         raise ValueError("DOI requires finite acquisition poses from the ROOT data")
     poses = np.unique(poses)
-    if poses.size != cfg["rotation_angles"]:
+    runs = acquisition.get("gate_run_ids") if cfg["data_from"] == "GATE" else None
+    if runs is not None and len(runs) != poses.size:
+        raise ValueError("GATE run IDs and modeled object poses disagree")
+    if runs is None and poses.size != cfg["rotation_angles"]:
         raise ValueError(
             f"DOI needs all configured discrete poses. ROOT contains {poses.size}, "
             f"detector_config specifies {cfg['rotation_angles']}"
@@ -415,22 +419,37 @@ def _pair_rays(pair, offsets, face_weights, depths, depth_weights, mu, width):
     return np.column_stack((points1[i], points2[j])), weights
 
 
+def face_quadrature_order(recon, settings):
+    """Choose transverse ray sampling at the scale of an image pixel."""
+    order = settings.face_order
+    if order != "auto":
+        return order
+    # Include both lateral edges to bound the largest unsampled interval.
+    for order in range(3, 13):
+        nodes, _ = roots_legendre(order)
+        max_gap = np.diff(np.r_[-1, nodes, 1]).max() * settings.face_width_mm / 2
+        if max_gap <= recon.img_pixel:
+            return order
+    return 12
+
+
 def _doi_matrix(recon, angles_deg, settings, acquisition, *, analytic=False):
     width, mu = settings.face_width_mm, settings.mu_per_mm
     if width is None or not np.isfinite([width, mu]).all() or min(width, mu) <= 0:
         raise ValueError("DOI requires positive finite segment face width and mu (mm^-1)")
+    face_order = face_quadrature_order(recon, settings)
     if any(not isinstance(order, (int, np.integer)) or not 1 <= order <= 12
-           for order in (settings.face_order, settings.depth_order)):
+           for order in (face_order, settings.depth_order)):
         raise ValueError("DOI quadrature orders must be integers in [1, 12]")
     shape = (recon.n_dist, recon.n_ang)
     pairs, depth = _nominal_pairs(
         acquisition, shape, recon.sino_range, width,
         analytic=analytic,
     )
-    ray_count = sum(map(len, pairs.values())) * (settings.face_order * settings.depth_order)**2
+    ray_count = sum(map(len, pairs.values())) * (face_order * settings.depth_order)**2
     if ray_count > 10_000_000:
         raise ValueError("DOI quadrature would trace more than 10 million rays. Reduce the orders")
-    face_nodes, face_weights = roots_legendre(settings.face_order)
+    face_nodes, face_weights = roots_legendre(face_order)
     if analytic:
         nodes, weights = roots_legendre(settings.depth_order)
         depths = (nodes + 1) * depth / 2
@@ -441,8 +460,8 @@ def _doi_matrix(recon, angles_deg, settings, acquisition, *, analytic=False):
         depth_weights *= acceptance
     offsets = np.repeat(width / 2 * face_nodes, settings.depth_order)
     face_weights = np.repeat(width / 2 * face_weights, settings.depth_order)
-    depths = np.tile(depths, settings.face_order)
-    depth_weights = np.tile(depth_weights, settings.face_order)
+    depths = np.tile(depths, face_order)
+    depth_weights = np.tile(depth_weights, face_order)
     raw_angles = (np.arange(recon.n_ang) + 0.5) * 180 / recon.n_ang
     angle_shift = np.asarray(angles_deg) - raw_angles
     if not np.allclose(angle_shift, angle_shift[0], rtol=0, atol=1e-8):
@@ -664,6 +683,8 @@ class DetectorResponse:
             self.doi = analytical_projection_matrix(recon, self.angles, settings, acquisition)
         else:
             self.doi = _doi_matrix(recon, self.angles, settings, acquisition) if use_doi else None
+        if use_doi:
+            self.metadata["face_order_used"] = face_quadrature_order(recon, settings)
         if use_doi and not settings.analytical:
             warnings.warn("DOI uses a 2D nominal crystal-pair aggregation by raw sinogram bin "
                           "with equal exposure per pose", stacklevel=2)
@@ -712,7 +733,8 @@ def add_response_arguments(parser):
                        help="511 keV linear attenuation coefficient in inverse mm. Enables DOI.")
     group.add_argument("--doi-face-mm", type=float,
                        help="Override the configured active transverse crystal segment width in mm.")
-    group.add_argument("--doi-face-order", type=int, default=3)
+    group.add_argument("--doi-face-order", default=3,
+                       help="Face quadrature order (1–12 or auto for voxel-aware sampling).")
     group.add_argument("--doi-depth-order", type=int, default=3)
     group.add_argument("--analytical-response", action="store_true",
                        help="Use the full first-interaction analytical projector with DOI.")

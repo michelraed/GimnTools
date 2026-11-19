@@ -148,7 +148,8 @@ def _petsys_sinogram(data, space, config, rsectors, workers):
 
 def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
                        matrix=[128,128,128], rsectors={0:"detector-1",1:"detector-2"},
-                       first_rotation=None, verbose=False, *, geometry_out=None, workers=None):
+                       first_rotation=None, verbose=False, *, geometry_out=None, workers=None,
+                       infer_rotation_angles=False):
     """Build the (slice, distance, angle) sinogram from a ROOT file.
 
     Parameters
@@ -159,8 +160,10 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
         events. One worker processes vectorized batches on the caller thread.
         GATE is serial.
     geometry_out : dict or None
-        If provided, receives a snapshot of the geometry and raw acquisition
-        poses for optional detector response modeling.
+        Receives the geometry, observed PETSYS poses and GATE run IDs.
+    infer_rotation_angles : bool
+        Size a PETSYS sinogram from the number of distinct recorded poses.
+        GATE uses the configured rotation plan to transform each run ID.
     first_rotation : str or None
         Axis used to place the detectors initially. If None, uses the same
         axis as rotate_along (the geometrically consistent choice: detector
@@ -184,9 +187,8 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
         print(f"[coincidence_to_lor] rotate_along={rotate_along!r}, "
               f"first_rotation={first_rot!r}, slice_axis_index={slice_axis}")
 
-    PETSYS = systemSpace(detectors_angles, rotate_along, detector_config, first_rot)
-
     if detector_config["data_from"] == "GATE":
+        PETSYS = systemSpace(detectors_angles, rotate_along, detector_config, first_rot)
         f = up.open(file_name)
         c = f['Coincidences'].arrays(parameters, library='np')
         ev_n = c['globalPosX1'].shape[0]
@@ -200,10 +202,14 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
             astep = 0.0
         if geometry_out is not None:
             from Gimntools.GimnRec.detector_response import acquisition_geometry
+            runs = np.unique(c["runID"])
             geometry_out.update(acquisition_geometry(
                 file_name, detector_config, detectors_angles, rsectors,
-                first_rot, -astep * c["runID"].astype(float),
+                first_rot, -astep * runs.astype(float),
             ))
+            geometry_out["gate_run_ids"] = runs.astype(int).tolist()
+            geometry_out["count_kind"] = "runs"
+            geometry_out["observed_count"] = len(runs)
         prev=0; df={'distance':[],'angle':[],'slice':[]}; cum=0
         for e in range(ev_n):
             cID1=c['crystalID1'][e]; cID2=c['crystalID2'][e]
@@ -254,14 +260,24 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
                     name for name in PETSYS_ID_BRANCHES if name in available
                 )]))
             co = tree.arrays(branches, library="np")
+        poses = None
+        if infer_rotation_angles or geometry_out is not None:
+            poses = np.unique(co["angleGantry_1"].astype(float))
+        if infer_rotation_angles:
+            if not poses.size or not np.isfinite(poses).all():
+                raise ValueError("PETSYS rotation detection requires finite positions in angleGantry_1")
+            detector_config["rotation_angles"] = len(poses)
+        PETSYS = systemSpace(detectors_angles, rotate_along, detector_config, first_rot)
         if geometry_out is not None:
             from Gimntools.GimnRec.detector_response import (
                 acquisition_geometry, check_petsys_lattice,
             )
             geometry_out.update(acquisition_geometry(
                 file_name, detector_config, detectors_angles, rsectors,
-                first_rot, -co["angleGantry_1"].astype(float),
+                first_rot, -poses,
             ))
+            geometry_out["count_kind"] = "positions"
+            geometry_out["observed_count"] = int(np.count_nonzero(np.isfinite(poses)))
             geometry_out.update(check_petsys_lattice(co, detector_config, rsectors))
         ev_n = co['SiPMPosX_1'].shape[0]
         print(f"PETSYS: {ev_n} events — {os.path.basename(file_name)}")

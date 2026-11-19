@@ -44,9 +44,15 @@ class DesktopAppearance:
         self.style.theme_create("gimntools", parent="clam")
         self.style.theme_use("gimntools")
         family = font.nametofont("TkDefaultFont", root=root).actual("family")
-        installed = set(font.families(root=root))
-        family = next((candidate for candidate in ("Inter", "Segoe UI", "DejaVu Sans")
-                       if candidate in installed), family)
+        installed = {name.casefold(): name for name in font.families(root=root)}
+        for candidate in ("Inter", "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans",
+                          "Liberation Sans", "Nimbus Sans L", "Helvetica", "Arial"):
+            if candidate.casefold() not in installed:
+                continue
+            trial = font.Font(root=root, family=installed[candidate.casefold()], size=10)
+            if trial.measure("iii") != trial.measure("mmm"):
+                family = trial.actual("family")
+                break
         for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
             font.nametofont(name, root=root).configure(family=family, size=10)
         self.heading = font.Font(root=root, family=family, size=17, weight="bold")
@@ -83,7 +89,7 @@ class DesktopAppearance:
         s.configure(".", background=p["window"], foreground=p["text"],
                     bordercolor=p["border"], lightcolor=p["raised"], darkcolor=p["raised"],
                     troughcolor=p["surface"], selectbackground=p["selection"],
-                    selectforeground=p["text"], focuscolor=p["accent"])
+                    selectforeground=p["text"], focuscolor=p["accent"], font="TkDefaultFont")
         s.configure("Header.TFrame", background=p["surface"])
         s.configure("Header.TLabel", background=p["surface"], foreground=p["muted"])
         s.configure("Brand.TLabel", background=p["surface"], foreground=p["text"], font=self.heading)

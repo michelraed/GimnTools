@@ -141,6 +141,9 @@ def test_vtk_desktop_theme_applies_to_controls_and_plots_and_persists(tmp_path, 
     dark = app.appearance.palette
     tabs = app.notebook.tabs()
     try:
+        from tkinter import font
+        ui_font = font.nametofont("TkDefaultFont", root=app)
+        assert ui_font.measure("iii") != ui_font.measure("mmm")
         assert app.appearance.mode.get() == "dark"
         assert app.log_text.cget("background") == dark["surface"]
         data = np.arange(42).reshape(1, 6, 7)

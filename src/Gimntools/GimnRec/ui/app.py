@@ -24,10 +24,12 @@ compiles).
 """
 
 import os
+import re
 import sys
 import queue
 import threading
 import traceback
+from pathlib import Path
 
 # Bootstrap: allows `python app.py` without installing the package.
 try:
@@ -40,7 +42,7 @@ except ModuleNotFoundError:
 import numpy as np
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -660,6 +662,27 @@ class AngleRsectorPanel(ttk.LabelFrame):
         return out
 
 
+def _build_root_batch(panel, paths, spec):
+    """Queue one batch to avoid holding multiple raw ROOT acquisitions in memory."""
+    prefix = spec["name"].strip()
+
+    def build():
+        for path in paths:
+            name = prefix
+            if prefix and len(paths) > 1:
+                name = f"{prefix}_{os.path.splitext(os.path.basename(path))[0]}"
+            panel._build_worker(dict(spec, path=path, name=name))
+
+    panel.app.start_worker("build sinograms", build)
+
+
+def _pick_root_batch(panel):
+    paths = filedialog.askopenfilenames(parent=panel, title="Select acquisition ROOTs",
+                                       filetypes=[("ROOT", "*.root")])
+    if paths:
+        panel._build_async(paths=paths)
+
+
 # ===========================================================================
 #  GATE tab
 # ===========================================================================
@@ -729,13 +752,16 @@ class GatePanel(ttk.Frame):
         ttk.Entry(rown, textvariable=self.var_name, width=24).pack(side=tk.LEFT)
         ttk.Button(content, text="Build sinogram", style="Primary.TButton",
                    command=self._build_async).pack(fill=tk.X, pady=4)
+        ttk.Button(content, text="Build multiple ROOTs...",
+                   command=lambda: _pick_root_batch(self)).pack(fill=tk.X, pady=(0, 4))
 
-    def _build_async(self):
-        if not self.var_root.get():
+    def _build_async(self, paths=None):
+        paths = paths or (self.var_root.get(),)
+        if not all(paths):
             messagebox.showwarning("No ROOT", "Select a GATE ROOT file.")
             return
         try:
-            spec = dict(path=self.var_root.get(), cfg=self.cfg_form.get_config(),
+            spec = dict(cfg=self.cfg_form.get_config(),
                         angles=self.angles.get_angles(),
                         rsec=self.angles.get_rsectors(),
                         interpolate=self.var_interp.get(),
@@ -743,7 +769,7 @@ class GatePanel(ttk.Frame):
                         angular_sigma=self.var_asigma.get(),
                         use_norm=self.var_gnorm.get(),
                         name=self.var_name.get())
-            self.app.start_worker("build sinogram", self._build_worker, spec)
+            _build_root_batch(self, paths, spec)
         except Exception:
             self.app.error(traceback.format_exc())
 
@@ -761,6 +787,8 @@ class GatePanel(ttk.Frame):
                                          get_default_parameters("gate"),
                                          rsectors=rsec, verbose=True,
                                          geometry_out=acquisition)
+            self.app.log(f"[GATE] {acquisition['observed_count']} runs detected in ROOT "
+                         f"(rotation plan: {cfg['rotation_angles']} positions)")
             if spec['interpolate']:
                 sino = interpolate_distance(sino, n_out=spec['n_dist'],
                                             kind="conservative")
@@ -843,13 +871,16 @@ class PetsysPanel(ttk.Frame):
         ttk.Entry(rown, textvariable=self.var_name, width=24).pack(side=tk.LEFT)
         ttk.Button(t, text="Build sinogram", style="Primary.TButton",
                    command=self._build_async).pack(fill=tk.X, pady=4)
+        ttk.Button(t, text="Build multiple ROOTs...",
+                   command=lambda: _pick_root_batch(self)).pack(fill=tk.X, pady=(0, 4))
 
-    def _build_async(self):
-        if not self.var_meas.get():
+    def _build_async(self, paths=None):
+        paths = paths or (self.var_meas.get(),)
+        if not all(paths):
             messagebox.showwarning("No ROOT", "Select the measurement ROOT.")
             return
         try:
-            spec = dict(path=self.var_meas.get(), bg=self.var_bg.get(),
+            spec = dict(bg=self.var_bg.get(),
                         bg_scale=float(self.var_bg_scale.get()),
                         cfg=self.cfg_form.get_config(),
                         angles_cfg=self.angles.get_angles(),
@@ -865,7 +896,7 @@ class PetsysPanel(ttk.Frame):
                 raise ValueError("background scale (Tprompt/Tbg) must be finite and nonnegative")
             if spec['bg_scale'] != 1:
                 self.app.log(f"[PETSYS] scaling background by {spec['bg_scale']:.6g}")
-            self.app.start_worker("build sinogram", self._build_worker, spec)
+            _build_root_batch(self, paths, spec)
         except Exception:
             self.app.error(traceback.format_exc())
 
@@ -882,7 +913,9 @@ class PetsysPanel(ttk.Frame):
             sino, _ = coincidence_to_lor(spec['path'], cfg, angles_cfg, params,
                                          rsectors=rsec, verbose=True,
                                          geometry_out=acquisition,
-                                         workers=spec['workers'])
+                                         workers=spec['workers'], infer_rotation_angles=True)
+            cfg = acquisition["detector_config"]
+            self.app.log(f"[PETSYS] {acquisition['observed_count']} positions detected in ROOT")
             if spec['bg']:
                 acquisition['background'] = spec['bg']
                 acquisition['background_scale'] = spec['bg_scale']
@@ -1059,6 +1092,10 @@ class SinogramPanel(ttk.Frame):
     def __init__(self, master, app):
         super().__init__(master, padding=6)
         self.app = app
+        files = ttk.Frame(self)
+        files.pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(files, text="Load sinograms...", command=self._load_files).pack(side=tk.LEFT)
+        ttk.Button(files, text="Save sinograms...", command=self._save_files).pack(side=tk.LEFT, padx=5)
         self._cor_line = None
         self._axis_line = None
         self._dragging = False
@@ -1120,6 +1157,70 @@ class SinogramPanel(ttk.Frame):
         self.info.pack(anchor="w")
 
     # ---- COR helpers ---------------------------------------------------
+    def _load_files(self):
+        paths = filedialog.askopenfilenames(parent=self, title="Load sinograms",
+                                           filetypes=[("GimnTools sinograms", "*.npz")])
+        if not paths:
+            return
+
+        def load():
+            from Gimntools.GimnRec.sinogram_io import load_sinogram
+
+            for path in paths:
+                try:
+                    self.app.set_sinogram(**load_sinogram(path))
+                except (OSError, ValueError) as exc:
+                    self.app.error(f"{os.path.basename(path)}: {exc}")
+
+        self.app.start_worker("load sinograms", load)
+
+    def _save_files(self):
+        entries = tuple(entry for entry in self.app.sinograms
+                        if (entry.get("acquisition") or {}).get("observed_count") is not None)
+        if not entries:
+            messagebox.showwarning("Sinogram", "Build a sinogram from ROOT before saving it.", parent=self)
+            return
+        if len(entries) > 1:
+            entries = _BatchSinograms(self, entries, title="Save sinograms",
+                                      prompt="Select sinograms to export as portable NPZ files.").result
+        if not entries:
+            return
+
+        def filename(entry):
+            return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", entry["name"]).strip(" .") or "sinogram"
+
+        if len(entries) == 1:
+            path = filedialog.asksaveasfilename(parent=self, defaultextension=".npz",
+                                               initialfile=f"{filename(entries[0])}.npz",
+                                               filetypes=[("GimnTools sinogram", "*.npz")])
+            if not path:
+                return
+            paths = [Path(path)]
+        else:
+            directory = filedialog.askdirectory(parent=self, title="Choose the sinogram destination")
+            if not directory:
+                return
+            folder = Path(directory)
+            existing = {p.stem for p in folder.glob("*.npz")}
+            paths = []
+            for entry in entries:
+                name = self.app._unique_name(filename(entry), existing)
+                existing.add(name)
+                paths.append(folder / f"{name}.npz")
+
+        def save():
+            from Gimntools.GimnRec.sinogram_io import save_sinogram
+
+            for path, entry in zip(paths, entries):
+                try:
+                    save_sinogram(path, entry)
+                except (OSError, ValueError) as exc:
+                    self.app.error(f"{path.name}: {exc}")
+                else:
+                    self.app.log(f"[sinogram] Saved {path}")
+
+        self.app.start_worker("save sinograms", save)
+
     def _bin_mm(self):
         if self.app.sino is None or not self.app.sino_range_mm:
             return None
@@ -1266,6 +1367,34 @@ class SinogramPanel(ttk.Frame):
 #  Reconstruction tab (+ save) — operates on the shared sinogram
 # ===========================================================================
 
+class _BatchSinograms(simpledialog.Dialog):
+    def __init__(self, parent, entries, *, title, prompt, hint=None):
+        self.entries = entries
+        self.prompt = prompt
+        self.hint = hint
+        super().__init__(parent, title=title)
+
+    def body(self, frame):
+        ttk.Label(frame, text=self.prompt, wraplength=450).pack(anchor="w")
+        holder = ttk.Frame(frame)
+        holder.pack(fill=tk.BOTH, expand=True, pady=6)
+        self.list = tk.Listbox(holder, selectmode=tk.EXTENDED, width=58,
+                               height=min(12, len(self.entries)), exportselection=False)
+        scrollbar = ttk.Scrollbar(holder, orient=tk.VERTICAL, command=self.list.yview)
+        self.list.configure(yscrollcommand=scrollbar.set)
+        self.list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        for entry in self.entries:
+            self.list.insert(tk.END, entry["name"])
+        self.list.selection_set(0, tk.END)
+        if self.hint:
+            ttk.Label(frame, text=self.hint, style="Hint.TLabel").pack(anchor="w")
+        return self.list
+
+    def apply(self):
+        self.result = tuple(self.entries[i] for i in self.list.curselection())
+
+
 class ReconstructionPanel(ttk.Frame):
     def __init__(self, master, app):
         super().__init__(master, padding=6)
@@ -1290,6 +1419,7 @@ class ReconstructionPanel(ttk.Frame):
         self.v = {
             "method": tk.StringVar(value="osem"), "iters": tk.IntVar(value=10),
             "subsets": tk.IntVar(value=4), "gevery": tk.IntVar(value=5),
+            "em_relaxation": tk.DoubleVar(value=1.0),
             "gsigma": tk.DoubleVar(value=0.4), "use_psf": tk.BooleanVar(value=False),
             "fwhm": tk.DoubleVar(value=3.0), "legacy": tk.BooleanVar(value=False),
             # --- image grid (volume-driven reconstruction) ---
@@ -1315,6 +1445,7 @@ class ReconstructionPanel(ttk.Frame):
         labeled_combo(box, "method", self.v["method"], METHOD_OPTIONS)
         labeled_spin(box, "iterations", self.v["iters"], 1, 500)
         labeled_spin(box, "subsets (OSEM)", self.v["subsets"], 1, 64)
+        labeled_spin(box, "EM relaxation", self.v["em_relaxation"], 0.1, 1.0, is_double=True)
         labeled_spin(box, "gauss_every", self.v["gevery"], 0, 100)
         labeled_spin(box, "gauss_sigma", self.v["gsigma"], 0.0, 10.0, is_double=True)
         ttk.Checkbutton(box, text="Legacy EM (old behaviour)",
@@ -1329,7 +1460,7 @@ class ReconstructionPanel(ttk.Frame):
             doi_material=tk.StringVar(value="LYSO"),
             doi_mu=tk.StringVar(value=str(CRYSTAL_MU_511["LYSO"])),
             doi_face=tk.StringVar(value=str(DEFAULT_FACE_WIDTH_MM)),
-            doi_face_order=tk.StringVar(value="3"), doi_depth_order=tk.StringVar(value="3"),
+            doi_face_order=tk.StringVar(value="auto"), doi_depth_order=tk.StringVar(value="3"),
             sv_lut=tk.StringVar(),
         )
         labeled_combo(response_box, "EM model", self.v["response_mode"],
@@ -1345,7 +1476,7 @@ class ReconstructionPanel(ttk.Frame):
         self._response_sino_name = None
         labeled_entry(doi, "Segment face (mm)", self.v["doi_face"])
         labeled_entry(doi, "Mu 511 (1/mm)", self.v["doi_mu"])
-        labeled_entry(doi, "Face quadrature", self.v["doi_face_order"])
+        labeled_entry(doi, "Face order (auto)", self.v["doi_face_order"])
         labeled_entry(doi, "Depth quadrature", self.v["doi_depth_order"])
         sv = ttk.Frame(response_box)
         file_picker(sv, "SV-PSF LUT", self.v["sv_lut"], patterns=(("NPZ", "*.npz"),))
@@ -1456,6 +1587,8 @@ class ReconstructionPanel(ttk.Frame):
         ttk.Entry(rn, textvariable=self.var_recon_name, width=18).pack(side=tk.LEFT)
         ttk.Button(ctrl, text="Reconstruct", style="Primary.TButton",
                    command=self._recon_async).pack(fill=tk.X, pady=4)
+        ttk.Button(ctrl, text="Reconstruct batch...",
+                   command=self._recon_batch).pack(fill=tk.X, pady=(0, 4))
 
         regbox = ttk.LabelFrame(ctrl, text="Reconstructions", padding=4)
         regbox.pack(fill=tk.X, pady=2)
@@ -1590,11 +1723,53 @@ class ReconstructionPanel(ttk.Frame):
             messagebox.showwarning(
                 "No sinogram", "Build a sinogram (GATE/PETSYS tab) first.")
             return
-        rname = self.var_recon_name.get()
+        self.app.start_worker("reconstruction", self.app.run_recon,
+                              self._snapshot(), name, self.var_recon_name.get())
+
+    def _snapshot(self):
         from types import SimpleNamespace
-        snapshot = {key: SimpleNamespace(get=lambda value=var.get(): value)
-                    for key, var in self.v.items()}
-        self.app.start_worker("reconstruction", self.app.run_recon, snapshot, name, rname)
+
+        return {key: SimpleNamespace(get=lambda value=var.get(): value)
+                for key, var in self.v.items()}
+
+    def _recon_batch(self):
+        entries = tuple(self.app.sinograms)
+        if not entries:
+            messagebox.showwarning("No sinograms", "Build or load sinograms first.", parent=self)
+            return
+        selected = _BatchSinograms(
+            self, entries, title="Reconstruct batch",
+            prompt="Select sinograms to reconstruct with the current method and image grid.",
+            hint="Each sinogram keeps its saved detector setup and COR.",
+        ).result
+        if not selected:
+            return
+        snapshots = self._snapshot()
+        prefix = self.var_recon_name.get().strip()
+
+        def run():
+            from types import SimpleNamespace
+
+            for entry in selected:
+                cfg = entry.get("detector_config") or {}
+                try:
+                    material = crystal_material(cfg.get("crystal_material"))
+                except ValueError as exc:
+                    self.app.error(f"{entry['name']}: {exc}")
+                    continue
+                defaults = {
+                    "doi_material": material,
+                    "doi_mu": cfg.get("mu_511_mm_inv", CRYSTAL_MU_511.get(material, "")),
+                    "doi_face": cfg.get("crystal_face_width_mm", DEFAULT_FACE_WIDTH_MM),
+                    "cor_mm": entry.get("cor_mm", 0.0),
+                }
+                options = dict(snapshots)
+                options.update({key: SimpleNamespace(get=lambda value=value: value)
+                                for key, value in defaults.items()})
+                name = f"{prefix}_{entry['name']}" if prefix else ""
+                self.app.run_recon(options, entry["name"], name)
+
+        self.app.start_worker("reconstruct batch", run)
 
     def _add_mhd(self):
         path = filedialog.askopenfilename(
@@ -1605,10 +1780,13 @@ class ReconstructionPanel(ttk.Frame):
             import SimpleITK as sitk
             img = sitk.ReadImage(path); arr = np.asarray(sitk.GetArrayFromImage(img), float)
             sp = img.GetSpacing()
+            if img.GetDimension() != 3 or arr.ndim != 3:
+                raise ValueError("Select a 3D scalar reconstruction")
             nm = os.path.basename(path).rsplit(".", 1)[0]
             self.app.add_reconstruction({
                 "name": nm, "volume": arr,
                 "spacing": (float(sp[0]), float(sp[1]), float(sp[2])),
+                "origin": img.GetOrigin(), "direction": img.GetDirection(),
                 "source": "MHD", "method": "external", "info": f"{nm} {arr.shape}"})
             self.app.log(f"[recon+] MHD: {nm} {arr.shape} spacing {tuple(round(s,3) for s in sp)}")
         except Exception as e:
@@ -1623,7 +1801,7 @@ class ReconstructionPanel(ttk.Frame):
                                        if r["name"] != name]
         if self.current_recon and self.current_recon.get("name") == name:
             self.current_recon = None
-        self.refresh_recon_list()
+        self.app._q.put(("recon_list_refresh", None))
         self.app.log(f"[recon−] removido: {name}")
 
     def _show_selected(self):
@@ -3215,10 +3393,14 @@ class ReconUI(tk.Tk):
         self.profiles_panel = ProfilesPanel(self.notebook, self)
         self.plot_panel = PlotReconPanel(self.notebook, self)
         self.nema_panel = NemaPanel(self.notebook, self)
+        from Gimntools.GimnRec.ui.dicom_panel import DicomPanel
+
+        self.dicom_panel = DicomPanel(self.notebook, self)
         self.notebook.add(self.gate, text="GATE")
         self.notebook.add(self.petsys, text="PETSYS")
         self.notebook.add(self.sino_panel, text="Sinogram")
         self.notebook.add(self.recon_panel, text="Reconstruction")
+        self.notebook.add(self.dicom_panel, text="DICOM")
         self.notebook.add(self.plot_panel, text="Plot Recon")
         self.notebook.add(self.nema_panel, text="NEMA FWHM")
         self.notebook.add(self.profiles_panel, text="Profiles")
@@ -3343,10 +3525,10 @@ class ReconUI(tk.Tk):
     def set_sinogram(self, sino, fov_mm, sino_range_mm, source,
                      detector_config=None, angles_override=None, name=None,
                      norm=None, background=None, dx_cor_mm=0.0, dy_cor_mm=0.0,
-                     acquisition=None, rebinned=False):
+                     acquisition=None, rebinned=False, cor_mm=0.0):
         """Queue a complete acquisition; never update Tk state from a worker."""
         data = np.asarray(sino, dtype=np.float64).copy()
-        if data.ndim != 3 or not np.isfinite(data).all() or (data < 0).any():
+        if data.ndim != 3 or not data.size or not np.isfinite(data).all() or (data < 0).any():
             raise ValueError('measured sinogram must be finite and nonnegative')
         if background is not None:
             background = np.asarray(background, dtype=float).copy()
@@ -3357,12 +3539,20 @@ class ReconUI(tk.Tk):
                   else (np.arange(data.shape[2]) + .5) * (180.0 / data.shape[2]))
         if angles.shape != (data.shape[2],) or not np.isfinite(angles).all():
             raise ValueError('invalid acquisition angles')
+        fov_mm, sino_range_mm = float(fov_mm), float(sino_range_mm)
+        cor_mm, dx_cor_mm, dy_cor_mm = map(float, (cor_mm, dx_cor_mm, dy_cor_mm))
+        if not np.isfinite([fov_mm, sino_range_mm, cor_mm, dx_cor_mm, dy_cor_mm]).all() or min(fov_mm, sino_range_mm) <= 0:
+            raise ValueError("Invalid sinogram field of view or COR")
+        if norm is not None:
+            norm = np.asarray(norm, dtype=float)
+            if norm.shape != data.shape[1:] or not np.isfinite(norm).all() or np.any(norm < 0):
+                raise ValueError("Invalid sinogram normalization")
         entry = {
             'name': name or f'{source}_{len(self.sinograms)+1}',
             'sino': data, 'fov_mm': float(fov_mm),
             'sino_range_mm': float(sino_range_mm), 'source': source,
             'detector_config': detector_config, 'angles': angles,
-            'norm': norm, 'background': background, 'cor_mm': 0.0,
+            'norm': norm, 'background': background, 'cor_mm': cor_mm,
             'dx_cor_mm': float(dx_cor_mm), 'dy_cor_mm': float(dy_cor_mm),
             'acquisition': acquisition, 'rebinned': rebinned,
         }
@@ -3372,6 +3562,10 @@ class ReconUI(tk.Tk):
             self._q.put(('new_sinogram', entry))
 
     def _register_sinogram(self, entry):
+        count = (entry.get("acquisition") or {}).get("observed_count")
+        if count is not None:
+            name = re.sub(r"_rotang_\d+(?:_\d+)?$", "", entry["name"])
+            entry["name"] = f"{name}_rotang_{count}"
         entry['name'] = self._unique_name(entry['name'],
                     [s['name'] for s in self.sinograms])
         self._study_generation += 1
@@ -3464,6 +3658,10 @@ class ReconUI(tk.Tk):
                 elif kind == "recon_list_refresh":
                     self.recon_panel.refresh_recon_list()
                     self.plot_panel.refresh_available()
+                    self.dicom_panel.refresh()
+                elif kind == "dicom_ready":
+                    self.dicom_panel.export_ready(payload)
+                    self.log(f"[DICOM] saved series in {payload}")
                 elif kind == "persist":
                     self._save_files()
         except queue.Empty:
@@ -3599,6 +3797,9 @@ class ReconUI(tk.Tk):
                                  f"μ={settings.mu_per_mm:.5g} mm⁻¹, face={settings.face_width_mm:.4g} mm")
                     self.log(f"[{entry['name']}] {mode} (exploratory 2D model)")
                     response = DetectorResponse(r, angles, settings, entry.get("acquisition"))
+                    if use_doi:
+                        self.log(f"[{entry['name']}] crystal quadrature: "
+                                 f"face={response.metadata['face_order_used']}, depth={settings.depth_order}")
                     if use_lut and response.metadata["lut"]["reference_factors_recomputed"]:
                         self.log(f"[{entry['name']}] LUT acceptance recomputed for "
                                  f"{r.n_img}×{r.n_img} at {r.voxel_mm:.4g} mm")
@@ -3607,20 +3808,21 @@ class ReconUI(tk.Tk):
                 elif mode == "Existing radial Gaussian" or params["use_psf"].get():
                     psf = make_psf_kernel(float(params["fwhm"].get()), srange / sino.shape[1])
             em_options = {"response": response} if response is not None else {}
+            relaxation = float(params["em_relaxation"].get()) if "em_relaxation" in params else 1.0
             if method == "osem":
                 vol = r.osem(angles, iterations=int(params["iters"].get()),
                              subsets_n=int(params["subsets"].get()), psf_kernel=psf,
                              norm_sino=norm, background_sino=background,
                              regularization_every=int(params["gevery"].get()),
                              regularization_sigma=float(params["gsigma"].get()),
-                             legacy=params["legacy"].get(), verbose=False, **em_options)
+                             legacy=params["legacy"].get(), relaxation=relaxation, verbose=False, **em_options)
             elif method == "mlem":
                 vol = r.mlem(angles, iterations=int(params["iters"].get()),
                              psf_kernel=psf, norm_sino=norm,
                              background_sino=background,
                              regularization_every=int(params["gevery"].get()),
                              regularization_sigma=float(params["gsigma"].get()),
-                             legacy=params["legacy"].get(), verbose=False, **em_options)
+                             legacy=params["legacy"].get(), relaxation=relaxation, verbose=False, **em_options)
             else:
                 from Gimntools.GimnRec.filters import make_fbp_filter
                 window = params["fbp_window"].get()

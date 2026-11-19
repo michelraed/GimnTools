@@ -550,3 +550,25 @@ def test_crystal_presets_use_profile_or_explicit_override():
     assert crystal_response_settings(profile, mu="0,09").mu_per_mm == pytest.approx(0.09)
     with pytest.raises(ValueError, match="attenuation coefficient"):
         crystal_response_settings({"crystal_material": "Custom"})
+
+
+def test_face_order_auto_adapts_to_voxel_and_uses_the_same_adjoint():
+    from Gimntools.GimnRec.detector_response import crystal_response_settings, face_quadrature_order
+
+    cfg, angles, mapping = setup_geometry("PETSYS")
+    geometry = acquisition_geometry("synthetic", cfg, angles, mapping, "y", -np.arange(6)*30)
+    settings = crystal_response_settings({}, face_order="Auto", analytical=True)
+    coarse = make_recon()
+    assert face_quadrature_order(coarse, settings) < 5
+    with pytest.warns(UserWarning, match="finer than the radial sampling"):
+        fine = siddon_reconstructor(np.zeros((1, 7, 42)), n_img=16, voxel_mm=0.84,
+                                    sino_range_mm=13.44, verbose=False)
+    model = DetectorResponse(fine, angle_centers(fine), settings, geometry)
+    assert model.metadata["face_order_used"] == 5
+    fixed = ResponseSettings(settings.mu_per_mm, settings.face_width_mm, face_order=5, analytical=True)
+    reference = DetectorResponse(fine, angle_centers(fine), fixed, geometry)
+    assert (model.doi != reference.doi).nnz == 0
+    forward, transpose = model.operators(np.arange(0, fine.n_ang, 2))
+    x = np.linspace(0, 1, 16**2).reshape(16, 16)
+    y = np.arange(fine.n_dist * 21).reshape(fine.n_dist, 21)
+    assert np.vdot(forward(x), y) == pytest.approx(np.vdot(x, transpose(y)), rel=1e-12)

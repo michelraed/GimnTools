@@ -11,7 +11,7 @@ import numpy as np
 from scipy.optimize import minimize, nnls
 
 from Gimntools import __version__
-from Gimntools.GimnRec.detector_response import _doi_matrix, lut_reference_grid
+from Gimntools.GimnRec.detector_response import _doi_matrix, face_quadrature_order, lut_reference_grid
 
 
 def analytical_projection_matrix(recon, angles_deg, settings, acquisition):
@@ -158,7 +158,8 @@ def generate_analytical_lut(recon, angles_deg, settings, acquisition, path, *,
     provenance = json.dumps(dict(
         version=__version__, model="2D collinear first-interaction, finite rectangular segments",
         analytical_geometry=acquisition, reconstruction_grid=recon.geometry(),
-        settings=asdict(settings), regularization=regularization,
+        settings=asdict(settings), face_order_used=face_quadrature_order(recon, settings),
+        regularization=regularization,
         weighted_fit=weights is not None, fit_tolerance=fit_tolerance,
         forward_reference="Siddon with analytical uniform-field bin acceptance",
         references=["10.1088/0031-9155/54/7/004", "10.1088/0031-9155/48/8/302",
