@@ -20,6 +20,7 @@ from Gimntools.GimnRec.convergence_plot import (
 from Gimntools.GimnRec.corrections import estimate_sinogram_cor
 from Gimntools.GimnRec.iteration_history import IterationHistory
 from Gimntools.GimnRec.listmode import CALIBRATION_FIELDS, load_listmode, reconstruct_listmode
+from Gimntools.GimnRec.listmode_psf import prepare_listmode_psf
 from Gimntools.GimnRec.listmode_response import prepare_listmode_response
 from Gimntools.GimnRec.ui.rendering import plot_canvas
 from Gimntools.GimnRec.ui.selection import BatchSelection
@@ -62,6 +63,12 @@ class ListmodePanel(ttk.Frame):
         self.subsets = tk.IntVar(self, 1)
         self.relaxation = tk.DoubleVar(self, 0.8)
         self.ratio_cap = tk.DoubleVar(self, 1e6)
+        self.sensitivity_floor = tk.StringVar(self)
+        self.phantom_support = tk.BooleanVar(self, True)
+        self.psf_mode = tk.StringVar(self, "Off")
+        self.psf_fwhm = tk.StringVar(self, "1.0 1.2")
+        self.psf_growth = tk.DoubleVar(self, 50.)
+        self.psf_lut = tk.StringVar(self)
         self.result = tk.StringVar(self)
 
         ttk.Label(self, text="3D list-mode reconstruction", style="Emphasis.TLabel").pack(anchor="w", pady=(0, 8))
@@ -72,8 +79,10 @@ class ListmodePanel(ttk.Frame):
         ttk.Button(path_row, text="Browse...", command=self._browse).pack(side=tk.LEFT, padx=4)
         ttk.Label(self, text="x1, y1, z1, E1, x2, y2, z2, E2 · millimetres and keV",
                   style="Hint.TLabel").pack(anchor="w", pady=(2, 8))
-        controls = ttk.LabelFrame(self, text="Volume and EM settings", padding=8)
-        controls.pack(anchor="nw", ipadx=5)
+        settings = ttk.Frame(self)
+        settings.pack(anchor="nw", fill=tk.X)
+        controls = ttk.LabelFrame(settings, text="Volume and EM settings", padding=8)
+        controls.pack(side=tk.LEFT, anchor="n", ipadx=5)
         _field(controls, "Matrix X Y Z", self.matrix)
         _field(controls, "Voxel X Y Z (mm)", self.voxel)
         _field(controls, "FOV centre X Y Z (mm)", self.center)
@@ -83,12 +92,42 @@ class ListmodePanel(ttk.Frame):
         _field(controls, "Subsets (1 = MLEM)", self.subsets)
         _field(controls, "EM relaxation", self.relaxation)
         _field(controls, "EM ratio cap", self.ratio_cap)
+        response = ttk.LabelFrame(settings, text="Detector response and support", padding=8)
+        response.pack(side=tk.LEFT, anchor="n", padx=(12, 0), fill=tk.X, expand=True)
+        _field(response, "Min. sensitivity (% of peak, blank = auto)", self.sensitivity_floor)
+        ttk.Checkbutton(response, text="Use simulated phantom cylinder when available",
+                        variable=self.phantom_support).pack(anchor="w")
+        model = _field(response, "Residual spatially variant PSF", self.psf_mode,
+                       ("Off", "3D Gaussian field", "Calibrated LUT"))
+        self.fwhm_field = _field(response, "Central FWHM XY Z (mm)", self.psf_fwhm)
+        self.growth_field = _field(response, "Peripheral FWHM increase (%)", self.psf_growth)
+        row = ttk.Frame(response)
+        row.pack(fill=tk.X, pady=2)
+        self.lut_button = ttk.Button(row, text="Browse LUT…", command=self._browse_lut)
+        self.lut_button.pack(side=tk.LEFT, padx=(0, 4))
+        self.lut_field = ttk.Entry(row, textvariable=self.psf_lut)
+        self.lut_field.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        model.bind("<<ComboboxSelected>>", lambda _event: self.sync_response_fields())
+        self.sync_response_fields()
         ttk.Label(self, text="Pseudo-simulator files use their saved detector response and sensitivity. "
                   "Other files use NPZ calibration when supplied, or uniform sensitivity.",
                   wraplength=600, style="Hint.TLabel").pack(anchor="w", pady=9)
         ttk.Button(self, text="Reconstruct list mode", style="Primary.TButton",
                    command=self._start).pack(anchor="w")
         ttk.Label(self, textvariable=self.result, wraplength=670).pack(anchor="w", pady=10)
+
+    def sync_response_fields(self):
+        mode = self.psf_mode.get()
+        for field in (self.fwhm_field, self.growth_field):
+            field.configure(state="normal" if mode == "3D Gaussian field" else "disabled")
+        for field in (self.lut_button, self.lut_field):
+            field.configure(state="normal" if mode == "Calibrated LUT" else "disabled")
+
+    def _browse_lut(self):
+        path = self.app.session.choose("listmode.psf.open", filedialog.askopenfilename, parent=self,
+                                       filetypes=[("Residual SV-PSF LUT", "*.npz")])
+        if path:
+            self.psf_lut.set(path)
 
     def _browse(self):
         path = self.app.session.choose(
@@ -106,8 +145,19 @@ class ListmodePanel(ttk.Frame):
         spacing = _numbers(self.voxel.get(), 3, float, "voxel X Y Z")
         center = _numbers(self.center.get(), 3, float, "FOV centre X Y Z")
         energy = _numbers(self.energy.get(), 2, float, "energy low high") if self.energy_enabled.get() else None
+        psf = None
+        if self.psf_mode.get() == "3D Gaussian field":
+            psf = dict(fwhm_mm=_numbers(self.psf_fwhm.get(), 2, float, "XY and Z FWHM"),
+                       growth=self.psf_growth.get() / 100.)
+        elif self.psf_mode.get() == "Calibrated LUT":
+            lut = self.psf_lut.get().strip()
+            if not lut:
+                raise ValueError("Select a residual SV-PSF LUT for list mode")
+            psf = dict(lut=lut)
+        floor = self.sensitivity_floor.get().strip()
         return Path(path), shape, spacing, energy, dict(center=center, relaxation=self.relaxation.get(),
-                                                          ratio_cap=self.ratio_cap.get())
+            ratio_cap=self.ratio_cap.get(), sensitivity_floor=float(floor) / 100. if floor else None,
+            restrict_to_phantom="auto" if self.phantom_support.get() else False, psf=psf)
 
     def _start(self):
         try:
@@ -139,6 +189,12 @@ class ListmodePanel(ttk.Frame):
                 method = "LM-MLEM" if subsets == 1 else "LM-OSEM"
                 info = (f"{path.stem} · {method} · {geometry['traced_events']:,} of "
                         f"{geometry['total_events']:,} coincidences traced · {geometry['sensitivity']}")
+                if geometry["sv_psf"]:
+                    info += f" · {geometry['sv_psf']}"
+                if geometry["sensitivity_floor"]:
+                    info += f" · sensitivity ≥ {100 * geometry['sensitivity_floor']:g}%"
+                if geometry["phantom_support"]:
+                    info += " · phantom cylinder support"
                 entry = {"name": f"{path.stem}_{method.lower()}", "source": path.stem, "method": method,
                          "volume": volume, "spacing": spacing, "origin": geometry["origin"],
                          "geometry": geometry, "info": info}
@@ -439,6 +495,11 @@ class ConvergencePanel(ttk.Frame):
             calibration["detector_model"] = prepare_listmode_response(
                 rays, shape, spacing, settings["center"], calibration["detector_model"],
             )
+        if settings.get("psf"):
+            response = calibration["detector_model"]
+            psf = prepare_listmode_psf(shape, spacing, settings["center"], settings["psf"],
+                                       response.detector_config if response else None)
+            settings = dict(settings, psf=psf)
         reference, geometry = run(min(4, max(options["iterations"])), 1)
         regions = detect_source_regions(reference, spacing, radius_mm=options["radius_mm"],
                                         background_gap_mm=options["background_gap_mm"],
@@ -450,7 +511,8 @@ class ConvergencePanel(ttk.Frame):
         recording = partial(history.record, "List mode", shape=shape, spacing=spacing) if options["record_steps"] else None
         rows = convergence_series(run, regions, options["iterations"], options["subsets"],
                                   cor_mm=None, label="List mode", recording=recording)
-        return path.stem, rows, regions, str(geometry["sensitivity"])
+        model = " · ".join(name for name in (geometry["sensitivity"], geometry["sv_psf"]) if name)
+        return path.stem, rows, regions, model
 
     def _register_result(self, name, rows, regions, summary, history):
         result_name = self.app._unique_name(name, self.results)

@@ -28,6 +28,9 @@ class PseudoSimulatorPanel(ttk.Frame):
         self.rods = tk.StringVar(self, "0.9, 1.2, 1.5, 1.8, 2.1, 2.4")
         self.spheres = tk.StringVar(self, "2, 2.5, 3, 3.5, 4, 5")
         self.contrast = tk.DoubleVar(self, 4.)
+        self.background = tk.DoubleVar(self, 1.)
+        self.center_clearance = tk.DoubleVar(self, 1.5)
+        self.sector_gap = tk.DoubleVar(self, 1.)
         self.geometry = tk.StringVar(self, "PETSYS")
         self.primaries = tk.IntVar(self, 100000)
         self.steps = tk.StringVar(self)
@@ -67,13 +70,16 @@ class PseudoSimulatorPanel(ttk.Frame):
         field = _field(controls, "Phantom", self.phantom_type, ("Derenzo", "IEC-inspired", "Homogeneous"))
         _field(controls, "Body diameter (mm)", self.diameter)
         _field(controls, "Axial length (mm)", self.height)
-        self.contrast_field = _field(controls, "Insert / background activity", self.contrast)
+        self.contrast_field = _field(controls, "Insert activity (relative)", self.contrast)
+        self.background_field = _field(controls, "Background activity (relative)", self.background)
         self.sector_field = _field(controls, "Derenzo sectors", self.sectors)
         self.sector_angles_field = _field(controls, "Sector angles ° (blank = equal)", self.sector_angles)
         self.rods_field = _field(controls, "Rod diameters (mm)", self.rods)
+        self.clearance_field = _field(controls, "Rod-free centre radius (mm)", self.center_clearance)
+        self.gap_field = _field(controls, "Gap between sectors (mm)", self.sector_gap)
         self.spheres_field = _field(controls, "Sphere diameters (mm)", self.spheres)
         ttk.Label(controls, text="Enter one rod diameter per sector, or a list of sphere diameters. "
-                  "An activity ratio of 0 makes the inserts cold.", style="Hint.TLabel",
+                  "Use zero activity for cold inserts or a cold background.", style="Hint.TLabel",
                   wraplength=330).pack(anchor=tk.W, pady=5)
         ttk.Button(controls, text="Preview phantom", command=self.preview).pack(fill=tk.X)
         self.figure = Figure(figsize=(5.5, 4.2), layout="constrained")
@@ -130,12 +136,17 @@ class PseudoSimulatorPanel(ttk.Frame):
         angles = self.sector_angles.get().strip() if kind == "Derenzo" else ""
         return make_phantom(kind, self.diameter.get(), self.height.get(),
                             contrast=1. if kind == "Homogeneous" else self.contrast.get(),
+                            background_activity=1. if kind == "Homogeneous" else self.background.get(),
+                            center_clearance_mm=self.center_clearance.get() if kind == "Derenzo" else 0.,
+                            sector_gap_mm=self.sector_gap.get() if kind == "Derenzo" else 0.,
                             sectors=self.sectors.get() if kind == "Derenzo" else 0, diameters=values,
                             sector_angles_deg=_numbers(angles, None, float, "sector angles") if angles else ())
 
     def preview(self):
         kind = self.phantom_type.get()
         for field, enabled in ((self.contrast_field, kind != "Homogeneous"),
+                               (self.background_field, kind != "Homogeneous"),
+                               (self.clearance_field, kind == "Derenzo"), (self.gap_field, kind == "Derenzo"),
                                (self.sector_field, kind == "Derenzo"), (self.rods_field, kind == "Derenzo"),
                                (self.sector_angles_field, kind == "Derenzo"),
                                (self.spheres_field, kind == "IEC-inspired")):
@@ -148,15 +159,19 @@ class PseudoSimulatorPanel(ttk.Frame):
         self.figure.clear()
         ax = self.figure.subplots()
         radius = phantom.diameter_mm / 2
-        ax.add_patch(Circle((0, 0), radius, edgecolor="#728898", facecolor="#dbe7ea", linewidth=1.5))
+        bg_color = "#dbe7ea" if phantom.background_activity > 0 else "none"
+        ax.add_patch(Circle((0, 0), radius, edgecolor="#728898", facecolor=bg_color, linewidth=1.5))
+        if phantom.center_clearance_mm:
+            ax.add_patch(Circle((0, 0), phantom.center_clearance_mm, fill=False,
+                                edgecolor="#728898", linestyle="--", linewidth=1))
         for insert in phantom.inserts:
-            shade = "#147c83" if phantom.insert_to_background >= 1 else "#52687a"
+            shade = "#147c83" if phantom.insert_activity >= phantom.background_activity else "#52687a"
             ax.add_patch(Circle(insert.center[:2], insert.radius, color=shade))
         ax.set(xlabel="X (mm)", ylabel="Y (mm)", title=f"{phantom.kind} · Central plane",
                xlim=(-1.12 * radius, 1.12 * radius), ylim=(-1.12 * radius, 1.12 * radius), aspect="equal")
         self.canvas.draw_idle()
         self.status.set(f"{phantom.kind} · Ø {phantom.diameter_mm:g} × {phantom.height_mm:g} mm · "
-                        f"{len(phantom.inserts)} inserts")
+                        f"{len(phantom.inserts)} inserts · background activity {phantom.background_activity:g}")
 
     def _detector_setup(self, fmt):
         panel = getattr(self.app, fmt.lower())

@@ -64,6 +64,9 @@ def test_switch_font_restore_controls_and_remember_dialog_folders(tmp_path, monk
         classic.recon_panel.v["iters"].set(27)
         classic.recon_panel.v["iters"].set("")  # An interrupted edit must keep the last valid value.
         classic.listmode_panel.matrix.set("31 35 39")
+        classic.listmode_panel.psf_mode.set("3D Gaussian field")
+        classic.listmode_panel.psf_fwhm.set("1.3 1.8")
+        classic.pseudo_panel.background.set(.75)
         classic.convergence_panel.subsets.set("1, 3, 6")
         classic.convergence_panel.matrix.set("63")
         classic.convergence_panel.noise_metric.set("Classical CV (%)")
@@ -85,6 +88,9 @@ def test_switch_font_restore_controls_and_remember_dialog_folders(tmp_path, monk
         assert themed.recon_panel.v["iters"].get() == 27
         assert themed.listmode_panel.path.get() == str(events)
         assert themed.listmode_panel.matrix.get() == "31 35 39"
+        assert themed.listmode_panel.psf_mode.get() == "3D Gaussian field"
+        assert themed.listmode_panel.psf_fwhm.get() == "1.3 1.8"
+        assert themed.pseudo_panel.background.get() == .75
         assert themed.convergence_panel.subsets.get() == "1, 3, 6"
         assert themed.convergence_panel.matrix.get() == "63"
         assert themed.convergence_panel.noise_metric.get() == "Classical CV (%)"

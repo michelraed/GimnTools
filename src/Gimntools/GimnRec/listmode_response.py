@@ -25,6 +25,8 @@ class ListmodeResponse:
     operators: tuple[csr_matrix, ...]
     event_rows: np.ndarray | None
     name: str
+    detector_config: dict
+    phantom: dict | None
 
 
 @njit(cache=True, nogil=True)
@@ -94,18 +96,18 @@ def _hit_channel(points, geometry, rotation, crystals_per_head):
 def _sample_pairs(codes, total_channels, crystals, geometry, unit):
     """Integrate within each active crystal volume, including DOI and both gaps."""
     count = len(crystals)
-    subdivisions = len(unit)
+    subdivisions = unit.shape[1]
     first, second = np.divmod(codes, total_channels)
     left, right = np.repeat(first // count, subdivisions), np.repeat(second // count, subdivisions)
     hits = []
-    for columns, channel in ((unit[:, :3], first), (unit[:, 3:], second)):
+    for columns, channel in ((unit[:, :, :3], first), (unit[:, :, 3:], second)):
         local = np.empty((len(codes), subdivisions, 3))
-        local[:, :, 0] = geometry.lower[0] + columns[:, 0] * (geometry.upper[0] - geometry.lower[0])
+        local[:, :, 0] = geometry.lower[0] + columns[:, :, 0] * (geometry.upper[0] - geometry.lower[0])
         if geometry.segmented:
-            uv = crystals[channel % count, None, :] + geometry.face * (columns[:, 1:] - .5)
+            uv = crystals[channel % count, None, :] + geometry.face * (columns[:, :, 1:] - .5)
             local[:, :, 1:] = uv @ geometry.grid
         else:
-            local[:, :, 1:] = geometry.lower[1:] + columns[:, 1:] * (geometry.upper[1:] - geometry.lower[1:])
+            local[:, :, 1:] = geometry.lower[1:] + columns[:, :, 1:] * (geometry.upper[1:] - geometry.lower[1:])
         hits.append(local.reshape(-1, 3))
     weights = _optical_rays(*hits, left, right, geometry.heads, geometry.lower, geometry.upper,
                             geometry.grid, geometry.pitch, geometry.pixels, geometry.face,
@@ -160,16 +162,22 @@ def prepare_listmode_response(rays, shape, spacing, center, simulator, *, progre
     order = 15
     if geometry.segmented:
         requested = np.ceil(np.log2(max(1., geometry.face / spacing.min())))
-        order = max(6, min(8, 4 + int(requested)))
-    unit = qmc.Sobol(d=6, scramble=True, seed=175).random_base2(order)
-    batch_pairs = max(1, 4096 // len(unit))
+        order = max(6 if readout else 7, min(8, 4 + int(requested)))
+    sobol = qmc.Sobol(d=6, scramble=True, seed=175).random_base2(order)
+    digital = (sobol * 2.**32).astype(np.uint32)
+    shifts = np.random.default_rng(241)
+    batch_pairs = max(1, 4096 // len(digital))
     for start in range(0, len(pair_codes), batch_pairs):
         stop = min(start + batch_pairs, len(pair_codes))
+        # Independent digital shifts retain stratification within each pair
+        # without repeating crystal offsets across the axial detector lattice.
+        shift = shifts.integers(0, 2**32, (stop - start, 1, 6), dtype=np.uint32)
+        unit = ((digital[None, :, :] ^ shift).astype(float) + .5) / 2.**32
         a, b, weight = _sample_pairs(pair_codes[start:stop], channels, crystals, geometry, unit)
         # Before the forward/adjoint operations sum the sub-rays belonging
         # to each physical channel, including bins with zero observed counts.
         if readout:
-            groups = np.arange(0, len(weight) + 1, len(unit), dtype=np.int32)
+            groups = np.arange(0, len(weight) + 1, len(digital), dtype=np.int32)
             reduce_rows = csr_matrix((weight, np.arange(len(weight), dtype=np.int32), groups),
                                      shape=(stop - start, len(weight)))
         for pose, rotation in enumerate(rotations):
@@ -198,5 +206,6 @@ def prepare_listmode_response(rays, shape, spacing, center, simulator, *, progre
         for i, blocks in enumerate(collected):
             collected[i] = vstack(blocks, format="csr") if blocks else None
         operators = tuple(a for a in collected if a is not None)
-        return ListmodeResponse(sensitivity, operators, event_rows, "finite crystal-pair response")
-    return ListmodeResponse(sensitivity, (), None, "simulated scanner sensitivity")
+        return ListmodeResponse(sensitivity, operators, event_rows, "finite crystal-pair response",
+                                config, info.get("phantom"))
+    return ListmodeResponse(sensitivity, (), None, "simulated scanner sensitivity", config, info.get("phantom"))

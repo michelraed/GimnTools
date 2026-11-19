@@ -297,8 +297,12 @@ Select **Pseudo-simulator → Phantom** to design a Derenzo, IEC-inspired
 or homogeneous cylinder. Set the body dimensions, the Derenzo sector count
 and one rod diameter per sector, or enter an IEC sphere diameter list.
 Derenzo sectors are equal by default. To use different widths, enter one
-angle per sector totalling 360°. The insert/background setting is an
-activity concentration ratio. Preview shows the central cross-section.
+angle per sector totalling 360°. The default Derenzo layout leaves a
+1.5 mm rod-free radius at the centre and at least 1 mm between rods in
+different sectors. Both distances can be changed. Insert and background
+activity concentrations are independent. For example, insert activity 4
+with background activity 1 gives 4:1, and background activity 0 gives a
+cold background. Preview shows the central cross-section.
 
 In **Acquisition**, select the live GATE or PETSYS detector setup, the
 primaries per step, optional scan overrides and a random seed. The run
@@ -334,6 +338,28 @@ that recorded zero coincidences. The reconstruction uses the chosen voxel
 grid and the scanner geometry independently of the simulated phantom.
 Exact interaction positions use Siddon rays with the simulated scanner
 sensitivity.
+
+The scanner calculation samples each crystal pair independently to avoid
+periodic sampling errors on the detector lattice. List-mode sensitivity
+support defaults to 1% of peak for simulator files. A percentage of zero
+keeps all positive measured support. The desktop also uses the cylinder
+stored with a simulated phantom by default. **Use simulated phantom
+cylinder when available** controls this independent spatial prior.
+
+**Residual spatially variant PSF** applies an image-space response before
+the list-mode projection. Its transpose is applied to the backprojection
+and voxel sensitivity in LM-MLEM and LM-OSEM, including convergence
+sweeps. **3D Gaussian field** accepts separate central XY and Z FWHM in mm
+and a peripheral increase in percent. These settings describe residual
+blur, ideally measured with point sources. The variation is scaled by the
+saved detector field, or the image field for plain endpoint archives.
+**Calibrated LUT** accepts nonnegative unit-sum kernels indexed by
+`(y, x, dy, dx)` with axes `x_mm, y_mm, dx_mm, dy_mm`, or by
+`(z, y, x, dz, dy, dx)` with additional `z_mm, dz_mm` axes. Positions and
+offsets use the list-mode object frame in mm. Include scalar
+`provenance` and `doi_included=False` for a residual kernel. Sinogram
+LUTs with DOI or per-bin reference factors include response terms already
+modeled by the list-mode crystal projector.
 
 ### Convergence
 

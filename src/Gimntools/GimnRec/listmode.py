@@ -195,10 +195,27 @@ def _volume_grid(shape, spacing, center):
     return shape_xyz, spacing, center, center - shape_xyz * spacing / 2
 
 
+def _phantom_support(shape, spacing, corner, phantom):
+    if not phantom or "diameter_mm" not in phantom or "height_mm" not in phantom:
+        raise ValueError("Phantom support requires a pseudo-simulator NPZ with cylinder dimensions")
+    diameter, height = float(phantom["diameter_mm"]), float(phantom["height_mm"])
+    if not np.isfinite([diameter, height]).all() or min(diameter, height) <= 0:
+        raise ValueError("Invalid phantom cylinder dimensions in the NPZ")
+    positions = [origin + (np.arange(n) + .5) * step
+                 for origin, n, step in zip(corner[::-1], shape, spacing[::-1])]
+    z, y, x = np.ix_(*positions)
+    # Include every voxel intersecting the cylinder, including partial volume at its edge.
+    nearest_x = np.maximum(0., np.abs(x) - spacing[0] / 2)
+    nearest_y = np.maximum(0., np.abs(y) - spacing[1] / 2)
+    return ((nearest_x**2 + nearest_y**2 <= (diameter / 2)**2)
+            & (np.abs(z) <= (height + spacing[2]) / 2)).ravel()
+
+
 def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
                          iterations=5, subsets=1, relaxation=0.8, ratio_cap=1e6,
                          sensitivity=None, normalization_lors=None, normalization_weights=None,
-                         detector_model=None, model_progress=None, cache_bytes=128 * 1024**2,
+                         detector_model=None, psf=None, sensitivity_floor=None, restrict_to_phantom=False,
+                         model_progress=None, cache_bytes=128 * 1024**2,
                          progress=None, checkpoint=None, update_callback=None):
     """Reconstruct a (z, y, x) volume with matched 3D Siddon operators.
 
@@ -233,6 +250,13 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
         response = detector_model if isinstance(detector_model, ListmodeResponse) else prepare_listmode_response(
             rays, shape, spacing, center, detector_model, progress=model_progress,
         )
+    if psf is not None:
+        from Gimntools.GimnRec.listmode_psf import ListmodePSF, prepare_listmode_psf
+
+        if not isinstance(psf, ListmodePSF):
+            psf = prepare_listmode_psf(shape, spacing, center, psf, response.detector_config if response else None)
+        if psf.shape != shape:
+            raise ValueError("The SV-PSF must match the list-mode image grid")
 
     sensitivity_model = "uniform"
     if sensitivity is not None:
@@ -295,26 +319,48 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
                 traced[sub] += np.count_nonzero(np.diff(a.indptr))
     if not traced.all():
         raise ValueError("At least one subset has no LOR crossing the image. Check the FOV and coordinate frame")
+    simulator_sensitivity = response is not None and sensitivity is response.sensitivity
+    floor = (.01 if simulator_sensitivity else 0.) if sensitivity_floor is None else sensitivity_floor
+    if not np.isfinite(floor) or not 0 <= floor < 1:
+        raise ValueError("List-mode sensitivity floor must be a fraction from 0 to less than 1")
     if sensitivity is None:
         sensitivity = support.astype(float)
-    elif response is not None and sensitivity is response.sensitivity:
-        support &= sensitivity > 0
-    elif np.any(sensitivity[support] == 0):
+    elif not simulator_sensitivity and np.any(sensitivity[support] == 0):
         raise ValueError("Normalization has zero exposure in voxels crossed by measured LORs")
+    if psf is not None:
+        support = psf.transpose(support.astype(float)) > 0
+        sensitivity = psf.transpose(sensitivity)
+    support &= (sensitivity > 0) & (sensitivity >= floor * sensitivity.max())
+    if restrict_to_phantom == "auto":
+        restrict_to_phantom = bool(response and response.phantom)
+    if restrict_to_phantom:
+        support &= _phantom_support(shape, spacing, corner, response.phantom if response else None)
     if not support.any():
         raise ValueError("The data and detector response have no common image support")
+    if floor or restrict_to_phantom:
+        illuminated = support.astype(float)
+        if psf is not None:
+            illuminated = psf.forward(illuminated)
+        for sub, (first, last) in enumerate(zip(edges[:-1], edges[1:])):
+            traced[sub] = sum(int(np.sum(np.where(a @ illuminated > 0, observed, 0)))
+                              for a, observed in blocks(sub, first, last))
+        if not traced.all():
+            raise ValueError("At least one subset misses the active reconstruction support")
     x = np.zeros(num_voxels)
     x[support] = traced.sum() / sensitivity[support].sum()
 
     for it in range(1, iterations + 1):
         for sub, (first, last) in enumerate(zip(edges[:-1], edges[1:])):
             correction = np.zeros(num_voxels)
+            blurred = psf.forward(x) if psf is not None else x
             for a, observed in blocks(sub, first, last):
-                predicted = a @ x
+                predicted = a @ blurred
                 ratio = np.divide(1., predicted, out=np.zeros_like(predicted), where=predicted > 0)
                 np.minimum(ratio, ratio_cap, out=ratio)
                 ratio *= observed
                 correction += a.T @ ratio
+            if psf is not None:
+                correction = psf.transpose(correction)
             exposure = (last - first) / len(rays)
             update = correction[support] / (sensitivity[support] * exposure)
             x[support] *= 1 + relaxation * (update - 1)
@@ -327,5 +373,7 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
     geometry = {"origin": tuple(corner + spacing / 2),
                 "spacing": tuple(spacing), "center": tuple(center),
                 "traced_events": int(traced.sum()), "input_events": len(rays),
-                "sensitivity": sensitivity_model, "iterations": iterations, "subsets": subsets}
+                "sensitivity": sensitivity_model, "sensitivity_floor": floor,
+                "phantom_support": bool(restrict_to_phantom), "sv_psf": psf.name if psf else None,
+                "iterations": iterations, "subsets": subsets}
     return x.reshape(shape), geometry

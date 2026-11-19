@@ -250,12 +250,14 @@ def test_reconstruction_workspace_listmode_and_convergence(tmp_path, monkeypatch
         panel.matrix.set("11 11 9")
         panel.voxel.set("1 1 1")
         panel.iterations.set(2)
+        panel.psf_mode.set("3D Gaussian field")
         panel._start()
         app._drain()
         assert not errors, errors
         result = app.reconstructions[-1]
         assert result["source"] == "coincidences" and result["volume"].shape == (9, 11, 11)
         assert result["origin"] == (-5., -5., -4.)
+        assert result["geometry"]["sv_psf"] == "3D Gaussian SV-PSF"
         assert app.recon_workspace.select() == str(app.recon_panel)
 
         p.source.set(p.LISTMODE)

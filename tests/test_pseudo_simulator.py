@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from itertools import combinations
 from time import monotonic, sleep
 
@@ -54,6 +55,33 @@ def test_phantom_packing_and_activity_concentrations():
         make_phantom("Derenzo", 24., 20., sectors=2, diameters=(1., 2.), sector_angles_deg=(200., 110.))
     with pytest.raises(ValueError, match="extends outside"):
         make_phantom("IEC-inspired", 12., 4., diameters=(6.,))
+
+
+def test_derenzo_keeps_central_clearance_and_real_intersector_spacing():
+    phantom = make_phantom("Derenzo", 24., 16., diameters=(1.4,) * 6,
+                           center_clearance_mm=1.5, sector_gap_mm=1.)
+    points = np.array([insert.center[:2] for insert in phantom.inserts])
+    assert np.min(np.linalg.norm(points, axis=1)) >= 1.5 + .7 - 1e-10
+    sectors = np.rint(np.arctan2(points[:, 1], points[:, 0]) / (np.pi / 3)).astype(int) % 6
+    assert set(sectors) == set(range(6))
+    for i, j in combinations(range(len(points)), 2):
+        if sectors[i] != sectors[j]:
+            assert np.linalg.norm(points[i] - points[j]) >= 2 * .7 + 1. - 1e-10
+
+
+def test_iec_background_activity_is_independent_and_can_be_cold():
+    rng = np.random.default_rng(14)
+    active = make_phantom("IEC-inspired", 12., 10., contrast=4, background_activity=.5, diameters=(6.,))
+    samples = active.sample(rng, 40000)
+    fraction = np.mean(np.linalg.norm(samples, axis=1) < 3.)
+    sphere = 4 * np.pi * 3**3 / 3
+    body = np.pi * 6**2 * 10
+    assert active.insert_to_background == 8.
+    assert fraction == pytest.approx(8 * sphere / (body + 7 * sphere), abs=.01)
+    cold = make_phantom("IEC-inspired", 12., 10., contrast=4, background_activity=0, diameters=(6.,))
+    assert np.all(np.linalg.norm(cold.sample(rng, 5000), axis=1) <= 3.)
+    with pytest.raises(ValueError, match="active background"):
+        make_phantom("IEC-inspired", 12., 10., contrast=0., background_activity=0., diameters=(6.,))
 
 
 def test_detector_interaction_respects_depth_and_pitch_gap():
@@ -135,6 +163,13 @@ def test_pseudo_crystal_response_recovers_uniform_cylinder_without_phantom_prior
 
     assert geometry["sensitivity"] == "finite crystal-pair response"
     assert cv(corrected) < .55 * cv(baseline)
+    constrained, status = reconstruct_listmode(
+        rays, shape, spacing, iterations=1, restrict_to_phantom="auto",
+        detector_model=replace(response, phantom={"diameter_mm": 10., "height_mm": 10.}),
+    )
+    assert status["phantom_support"] and status["sensitivity_floor"] == .01
+    assert not constrained[0].any() and not constrained[-1].any()
+    assert constrained[7, 7, 7] > 0
 
 
 def test_export_petsys_preserves_aligned_hits_and_matches_binning(tmp_path):

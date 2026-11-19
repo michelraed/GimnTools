@@ -3530,13 +3530,15 @@ class ReconUI(tk.Tk):
             "petsys": (self.petsys, "var_apply_corr var_gnorm var_bg_scale var_ndist var_asigma var_sino_threads var_name"),
             "sinogram": (self.sino_panel, "var_click"),
             "volume": (self.recon_panel, "var_recon_name var_fmt"),
-            "listmode": (self.listmode_panel, "path matrix voxel center energy_enabled energy iterations subsets relaxation ratio_cap"),
+            "listmode": (self.listmode_panel, "path matrix voxel center energy_enabled energy iterations subsets relaxation ratio_cap "
+                         "sensitivity_floor phantom_support psf_mode psf_fwhm psf_growth psf_lut"),
             "convergence": (self.convergence_panel, "iterations subsets radius background_gap source_count threshold search_radius "
                             "matrix voxel record_steps compare_cor x_axis metric noise_metric title font legend style palette dpi"),
             "iteration_viewer": (self.iteration_panel, "plane fixed_scale"),
             "dicom": (self.dicom_panel, "study equipment"),
             "pseudo": (self.pseudo_panel, "phantom_type diameter height sectors sector_angles rods spheres contrast geometry "
-                       "primaries steps arc start_angle seed hit_mode root_format root_path gate_unit gate_global"),
+                       "background center_clearance sector_gap primaries steps arc start_angle seed hit_mode root_format "
+                       "root_path gate_unit gate_global"),
             "profiles": (self.profiles_panel, "var_name var_pesq var_exp var_fmt"),
             "nema": (self.nema_panel, "plane roi_shape side radius"),
             "plot": (self.plot_panel, "v_aspect v_row_title_pos v_fs_title v_fs_row v_fs_label v_fs_tick v_fs_cbar "
@@ -3544,6 +3546,7 @@ class ReconUI(tk.Tk):
         }
         for group, (panel, names) in panels.items():
             self.session.watch(group, {name: getattr(panel, name) for name in names.split()})
+        self.listmode_panel.sync_response_fields()
         self.session.watch("reconstruction", {key: var for key, var in self.recon_panel.v.items() if key != "cor_mm"})
         for key, panel in (("sinogram", self.sino_panel), ("volume", self.recon_panel), ("nema", self.nema_panel)):
             self.session.watch(f"{key}.display", {"cmap": panel.ctrl.cmap, "scale": panel.ctrl.mode})

@@ -204,7 +204,8 @@ def simulate_listmode(path, phantom, config, detector_angles, mapping, *,
     )
     rng = np.random.default_rng(seed)
     metadata = {
-        "source": "pseudo-simulator", "format": fmt, "phantom": asdict(phantom),
+        "source": "pseudo-simulator", "format": fmt,
+        "phantom": dict(asdict(phantom), insert_to_background=phantom.insert_to_background),
         "detector_config": {key: np.asarray(value).tolist() for key, value in config.items()},
         "detector_angles_deg": dict(zip(geometry.names, geometry.angles.tolist())),
         "detector_mapping": {int(key): name for key, name in mapping.items() if name is not None},

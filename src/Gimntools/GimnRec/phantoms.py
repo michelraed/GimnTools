@@ -17,9 +17,19 @@ class Phantom:
     kind: str
     diameter_mm: float
     height_mm: float
-    insert_to_background: float
+    insert_activity: float
     inserts: tuple
     sector_angles_deg: tuple = ()
+    background_activity: float = 1.
+    center_clearance_mm: float = 0.
+    sector_gap_mm: float = 0.
+
+    @property
+    def insert_to_background(self):
+        if not self.background_activity:
+            return None
+        value = self.insert_activity / self.background_activity
+        return value if np.isfinite(value) else None
 
     def sample(self, rng, count):
         """Sample activity by concentration times volume in disjoint regions."""
@@ -30,9 +40,9 @@ class Phantom:
         ])
         background_volume = np.pi * radius**2 * self.height_mm - volumes.sum()
         # Rescale before multiplication so large finite activity ratios still work.
-        scale = max(1., self.insert_to_background)
-        weights = np.r_[background_volume / scale,
-                        volumes * (self.insert_to_background / scale)]
+        scale = max(self.background_activity, self.insert_activity if self.inserts else 0.)
+        weights = np.r_[background_volume * (self.background_activity / scale),
+                        volumes * (self.insert_activity / scale)]
         counts = rng.multinomial(count, weights / weights.sum())
         points = np.empty((count, 3))
         remaining = np.arange(counts[0])
@@ -71,7 +81,7 @@ def _cylinder(rng, count, radius, height):
                             rng.uniform(-height / 2, height / 2, count)))
 
 
-def _derenzo_inserts(body_radius, diameters, widths_deg):
+def _derenzo_inserts(body_radius, diameters, widths_deg, center_clearance, sector_gap):
     sectors = len(diameters)
     edge = -np.deg2rad(widths_deg[0]) / 2
     for sector, (diameter, width_deg) in enumerate(zip(diameters, widths_deg)):
@@ -82,7 +92,8 @@ def _derenzo_inserts(body_radius, diameters, widths_deg):
         edge += 2 * half_angle
         cosine, sine = np.cos(angle), np.sin(angle)
         narrow = sectors > 1 and half_angle <= np.pi / 2
-        base_x = radius / np.sin(half_angle) if narrow else 0.
+        side_clearance = radius + sector_gap / 2
+        base_x = max(radius + center_clearance, side_clearance / np.sin(half_angle)) if narrow else 0.
         limit = body_radius - radius
         rods = []
         if limit >= 0:
@@ -92,15 +103,18 @@ def _derenzo_inserts(body_radius, diameters, widths_deg):
                 y = row * row_pitch
                 offset = (row % 2) * pitch / 2
                 xmax = np.sqrt(max(0., limit**2 - y**2))
-                xmin = base_x + abs(y) / np.tan(half_angle) if narrow else -xmax
-                # Snap to a triangular lattice, offset to fit a rod near the sector tip.
+                xmin = (side_clearance + abs(y) * np.cos(half_angle)) / np.sin(half_angle) if narrow else -xmax
+                # Retain the triangular lattice within each physically separated sector.
                 base = offset + base_x
                 for col in range(int(np.ceil((xmin - base) / pitch)), int(np.floor((xmax - base) / pitch)) + 1):
                     x = base + col * pitch
+                    dist = np.hypot(x, y)
+                    if dist + 1e-10 < radius + center_clearance:
+                        continue
                     if sectors > 1 and not narrow:
                         separation = half_angle - abs(np.arctan2(y, x))
-                        clearance = np.hypot(x, y) * np.sin(min(separation, np.pi / 2))
-                        if clearance < radius:
+                        clearance = dist * np.sin(min(separation, np.pi / 2))
+                        if clearance < side_clearance:
                             continue
                     rods.append(Insert((cosine*x - sine*y, sine*x + cosine*y, 0.), radius, "rod"))
         if not rods:
@@ -127,11 +141,12 @@ def _iec_inserts(radius, height, diameters):
 
 
 def make_phantom(kind, diameter_mm, height_mm, *, contrast=4., sectors=6, diameters=(),
-                 sector_angles_deg=()):
+                 sector_angles_deg=(), background_activity=1., center_clearance_mm=1.5, sector_gap_mm=1.):
     """Build a homogeneous cylinder, a Derenzo rod phantom or IEC-inspired spheres."""
-    body = np.array([diameter_mm, height_mm, contrast], dtype=float)
-    if not np.isfinite(body).all() or np.any(body[:2] <= 0) or contrast < 0:
-        raise ValueError("Enter positive phantom dimensions and a nonnegative insert/background ratio")
+    body = np.array([diameter_mm, height_mm, contrast, background_activity,
+                     center_clearance_mm, sector_gap_mm], dtype=float)
+    if not np.isfinite(body).all() or np.any(body[:2] <= 0) or np.any(body[2:] < 0):
+        raise ValueError("Enter positive phantom dimensions and nonnegative activity and spacing")
     angles = ()
     if kind == "Homogeneous":
         inserts = ()
@@ -149,9 +164,13 @@ def make_phantom(kind, diameter_mm, height_mm, *, contrast=4., sectors=6, diamet
                     or not np.isclose(widths.sum(), 360., rtol=0., atol=1e-6)):
                 raise ValueError("Enter one positive angle per Derenzo sector. The angles must total 360°")
             angles = tuple(widths.tolist())
-            inserts = tuple(_derenzo_inserts(diameter_mm / 2, sizes, angles))
+            inserts = tuple(_derenzo_inserts(diameter_mm / 2, sizes, angles, center_clearance_mm, sector_gap_mm))
         elif kind == "IEC-inspired":
             inserts = _iec_inserts(diameter_mm / 2, height_mm, sizes)
         else:
             raise ValueError(f"Unknown phantom type {kind!r}")
-    return Phantom(kind, float(diameter_mm), float(height_mm), float(contrast), inserts, angles)
+    if background_activity == 0 and (not inserts or contrast == 0):
+        raise ValueError("The phantom must have an active background or at least one active insert")
+    return Phantom(kind, float(diameter_mm), float(height_mm), float(contrast), inserts, angles,
+                   float(background_activity), float(center_clearance_mm) if angles else 0.,
+                   float(sector_gap_mm) if angles else 0.)
