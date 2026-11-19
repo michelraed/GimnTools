@@ -234,6 +234,8 @@ reconstruction metadata for reproducibility.
 gimntools_ui
 ```
 
+Optional MLEM/OSEM detector response models include DOI and spatially varying PSF, independently or combined. See the [detector response guide](docs/detector_response_geometry.md) for acquisition requirements and the GATE LUT format.
+
 GUI tabs support GATE and PETSYS input, sinogram visualization, EM/FBP
 reconstruction, orthogonal display, profile analysis and FWHM analysis.
 Loading or acquisition changes should be checked before exporting results.
