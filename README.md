@@ -291,15 +291,65 @@ array of XYZ endpoint pairs with optional `normalization_weights`.
 Without calibration the reconstruction assumes uniform sensitivity on
 illuminated voxels. The optional energy window applies to both hits.
 
+### Pseudo-simulator
+
+Select **Pseudo-simulator → Phantom** to design a Derenzo, IEC-inspired
+or homogeneous cylinder. Set the body dimensions, the Derenzo sector count
+and one rod diameter per sector, or enter an IEC sphere diameter list.
+Derenzo sectors are equal by default. To use different widths, enter one
+angle per sector totalling 360°. The insert/background setting is an
+activity concentration ratio. Preview shows the central cross-section.
+
+In **Acquisition**, select the live GATE or PETSYS detector setup, the
+primaries per step, optional scan overrides and a random seed. The run
+rotates the source between batches. With the default plan, GATE uses the
+configured runs with step size 360° / (heads × runs), and PETSYS uses the
+configured angular coverage and pose count. The detector model uses the
+mapped head angles, front distance, depth, material, face width, pitch and
+pixel layout. It traces ideal back-to-back 511 keV photons and samples the
+first crystal interaction, including inactive gaps. It models geometry
+and crystal efficiency without scatter, random coincidences, or electronics.
+**Match acquisition** saves the PETSYS readout position or the GATE hit
+position according to its configured position mode.
+
+**ROOT to list mode** reads the original GATE or PETSYS coincidence tree
+in batches and exports the recorded events. PETSYS uses the recorded
+gantry angle, corrected energy and SiPM coordinates. GATE uses the run
+transform from the sinogram builder, with an option to use the recorded
+global positions instead of crystal centres. The GATE energy unit defaults
+to MeV. Binned sinograms have already lost individual hit pairs and energies.
+
+Both exports contain `events`, `pose_deg`, `step_index` and `metadata_json`.
+The coordinates are already in the object frame, with XYZ aligned to the
+two sinogram plane axes and the slice axis. Use **Open in List mode** to
+send the exported NPZ to Reconstruction.
+
+### Convergence
+
 **Reconstruction → Convergence** runs selected EM checkpoints for a
 sinogram or the current list-mode NPZ. The matrix and voxel size can be
 set directly in this tab. Leave them blank to use the existing grid.
-Select iterations and subsets, then compare percent contrast, background coefficient of variation and
-contrast-to-noise ratio. The tool detects source positions in a short
-MLEM reference, keeps the same ROIs across comparisons, and clamps
-extreme ROI samples for the mean and deviation. The **Chart** controls
-change axes, colours, typography and line style. Each acquisition's
-result can be saved as a CSV or a figure. The suggested checkpoint
+Select iterations and subsets, then compare percent contrast, background
+coefficient of variation (CV), and contrast-to-noise ratio (CNR). The tool
+detects source positions in a short MLEM reference and keeps the same source
+and local background ROIs across checkpoints. **Background noise** in
+**Chart** selects the robust CV, the classical CV, or both. Classical CV
+is 100 times the sample standard deviation divided by the arithmetic mean
+of all background ROI voxels. The background shell keeps a transverse
+clearance of 3 mm from the edge of every detected source ROI in all slices.
+Adjust **Background gap (mm)**
+in **Sweep** and inspect the resulting masks in **Iterations & ROIs**.
+Robust CV applies the same formula after
+clamping values to the 5th and 95th percentiles when the ROI contains at
+least 12 voxels. A nonpositive mean or fewer than two voxels gives an
+undefined CV. Contrast and CNR continue to use the robust statistics.
+
+**Run batch…** sweeps several loaded acquisitions together and opens their
+comparison. **Compare results…** combines existing sweeps. The figure places
+contrast, CNR and the selected CV measures in rows with a shared Y scale per
+metric and one column per result. The **Chart** controls change axes, colours,
+typography and line style. CSV exports include both CVs, and comparison
+exports also identify the acquisition on each row. The suggested checkpoint
 minimizes subset updates among settings within 95% of the best median
 normalized CNR on the first case tested.
 

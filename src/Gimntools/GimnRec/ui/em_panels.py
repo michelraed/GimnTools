@@ -11,12 +11,17 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from Gimntools.GimnRec.convergence import (
-    convergence_operating_point, convergence_series, detect_source_regions, save_convergence_csv,
+    DEFAULT_BACKGROUND_GAP_MM, convergence_operating_point, convergence_series, detect_source_regions,
+    save_convergence_csv,
+)
+from Gimntools.GimnRec.convergence_plot import (
+    NOISE_METRICS, ROBUST_CV, convergence_metrics, draw_convergence_chart,
 )
 from Gimntools.GimnRec.corrections import estimate_sinogram_cor
 from Gimntools.GimnRec.iteration_history import IterationHistory
 from Gimntools.GimnRec.listmode import load_listmode, reconstruct_listmode
 from Gimntools.GimnRec.ui.rendering import plot_canvas
+from Gimntools.GimnRec.ui.selection import BatchSelection
 from Gimntools.GimnRec.ui.session import SessionToolbar
 
 
@@ -143,6 +148,7 @@ class ConvergencePanel(ttk.Frame):
         super().__init__(parent, padding=8)
         self.app = app
         self.results = {}
+        self.comparison = ()
         self.source = tk.StringVar(self)
         self.history = tk.StringVar(self)
         self.matrix = tk.StringVar(self)
@@ -151,6 +157,7 @@ class ConvergencePanel(ttk.Frame):
         self.iterations = tk.StringVar(self, "1, 2, 4, 6, 8, 12")
         self.subsets = tk.StringVar(self, "1, 2, 4")
         self.radius = tk.DoubleVar(self, 2.0)
+        self.background_gap = tk.DoubleVar(self, DEFAULT_BACKGROUND_GAP_MM)
         self.source_count = tk.IntVar(self, 0)
         self.threshold = tk.DoubleVar(self, 25.)
         self.search_radius = tk.DoubleVar(self, 0.)
@@ -158,6 +165,7 @@ class ConvergencePanel(ttk.Frame):
         self.status = tk.StringVar(self)
         self.x_axis = tk.StringVar(self, "Iterations")
         self.metric = tk.StringVar(self, "Contrast (%)")
+        self.noise_metric = tk.StringVar(self, ROBUST_CV)
         self.title = tk.StringVar(self)
         self.font = tk.StringVar(self, "sans-serif")
         self.legend = tk.StringVar(self, "best")
@@ -188,6 +196,9 @@ class ConvergencePanel(ttk.Frame):
         _field(study, "Iterations", self.iterations)
         _field(study, "Subsets", self.subsets)
         _field(study, "Source ROI (mm)", self.radius)
+        _field(study, "Background gap (mm)", self.background_gap)
+        ttk.Label(study, text="Transverse clearance from every source ROI, across all slices.",
+                  style="Hint.TLabel", wraplength=245).pack(anchor="w")
         _field(study, "Source count (0 = auto)", self.source_count)
         _field(study, "Peak threshold (%)", self.threshold)
         _field(study, "Search radius (mm, 0 = auto)", self.search_radius)
@@ -195,9 +206,12 @@ class ConvergencePanel(ttk.Frame):
         ttk.Checkbutton(study, text="Record iteration images", variable=self.record_steps).pack(anchor="w", pady=(0, 5))
         ttk.Button(footer, text="Run convergence sweep", style="Primary.TButton",
                    command=self._start).pack(fill=tk.X)
+        ttk.Button(footer, text="Run batch...", command=self._start_batch).pack(fill=tk.X, pady=(4, 0))
         ttk.Label(footer, textvariable=self.status, wraplength=250).pack(fill=tk.X, pady=(4, 0))
         _field(chart, "X axis", self.x_axis, ("Iterations", "Subset updates"))
-        _field(chart, "Signal metric", self.metric, ("Contrast (%)", "CNR"))
+        _field(chart, "Single-result signal", self.metric, ("Contrast (%)", "CNR"))
+        noise_choice = _field(chart, "Background noise", self.noise_metric, NOISE_METRICS)
+        noise_choice.bind("<<ComboboxSelected>>", lambda _event: self.redraw())
         self.source_view = _field(chart, "Source", self.selected_source, ("All",))
         _field(chart, "Title", self.title)
         _field(chart, "Font", self.font, ("sans-serif", "serif", "monospace"))
@@ -214,14 +228,30 @@ class ConvergencePanel(ttk.Frame):
         ttk.Label(results, text="Result").pack(side=tk.LEFT)
         self.history_combo = ttk.Combobox(results, textvariable=self.history, width=30, state="readonly")
         self.history_combo.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.history_combo.bind("<<ComboboxSelected>>", lambda _event: self._select_result())
+        self.history_combo.bind("<<ComboboxSelected>>", lambda _event: self._select_single_result())
         actions = ttk.Frame(right)
         actions.pack(fill=tk.X, pady=(0, 4))
         ttk.Button(actions, text="Iterations & ROIs", command=self._open_history).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Compare results...", command=self._compare_results).pack(side=tk.LEFT, padx=4)
         ttk.Button(actions, text="Save figure...", command=self._save_figure).pack(side=tk.RIGHT)
         ttk.Button(actions, text="Save CSV...", command=self._save_csv).pack(side=tk.RIGHT, padx=5)
+        viewport = ttk.Frame(right)
+        viewport.pack(fill=tk.BOTH, expand=True)
+        viewport.rowconfigure(0, weight=1)
+        viewport.columnconfigure(0, weight=1)
+        self.plot_view = tk.Canvas(viewport, highlightthickness=0, width=1, height=1)
+        vertical = ttk.Scrollbar(viewport, orient=tk.VERTICAL, command=self.plot_view.yview)
+        horizontal = ttk.Scrollbar(viewport, orient=tk.HORIZONTAL, command=self.plot_view.xview)
+        self.plot_view.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.plot_view.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        plot = ttk.Frame(self.plot_view)
+        self._plot_window = self.plot_view.create_window(0, 0, window=plot, anchor="nw")
+        self._plot_minimum = (360, 300)
+        self.plot_view.bind("<Configure>", self._resize_plot)
         self.figure = Figure(figsize=(7, 5), dpi=100, constrained_layout=True)
-        self.canvas = plot_canvas(app, self.figure, right)
+        self.canvas = plot_canvas(app, self.figure, plot)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         SessionToolbar(self.canvas, right).update()
         self.bind("<Visibility>", lambda _event: self.refresh())
@@ -252,66 +282,97 @@ class ConvergencePanel(ttk.Frame):
             raise ValueError(f"Enter {label} as {description}")
         return values
 
-    def _start(self):
+    def _start_batch(self):
+        entries = list(self.app.sinograms)
+        if self.app.listmode_panel.path.get().strip():
+            entries.append({"name": self.LISTMODE})
+        if not entries:
+            self.app.error("Load a sinogram or select a list-mode NPZ")
+            return
+        selected = BatchSelection(
+            self, entries, title="Batch convergence",
+            prompt="Select acquisitions to sweep and plot side by side.",
+            hint="The same iteration and subset settings apply to each acquisition.",
+        ).result
+        if selected:
+            self._start(tuple(entry["name"] for entry in selected))
+
+    def _sweep_spec(self, name, matrix_text, voxel_text, snapshot):
+        is_listmode = name == self.LISTMODE
+        matrix = self._grid_value(matrix_text, int, "matrix", listmode=is_listmode)
+        voxel = self._grid_value(voxel_text, float, "voxel size", listmode=is_listmode)
+        if is_listmode:
+            path, shape, spacing, energy, settings = self.app.listmode_panel.settings()
+            if matrix:
+                shape = matrix[::-1] if len(matrix) == 3 else (shape[0], matrix[0], matrix[0])
+            if voxel:
+                spacing = voxel if len(voxel) == 3 else (voxel[0], voxel[0], spacing[2])
+            return path, shape, spacing, energy, settings
+
+        entry = self.app.get_sinogram(name)
+        if entry is None:
+            raise ValueError("Load a sinogram or select a list-mode NPZ")
+        snapshot = snapshot.copy()
+        if matrix or voxel:
+            mode = "matrix+voxel" if matrix and voxel else "matrix" if matrix else "voxel"
+            snapshot["grid_mode"] = SimpleNamespace(get=lambda: mode)
+            if matrix:
+                snapshot["n_img"] = SimpleNamespace(get=lambda: matrix[0])
+            if voxel:
+                snapshot["voxel_mm"] = SimpleNamespace(get=lambda: voxel[0])
+        if name != self.app.recon_panel.var_sino.get():
+            self._use_acquisition_response(snapshot, entry)
+        return entry, snapshot
+
+    def _start(self, names=None):
+        names = names if names is not None else (self.source.get(),)
         try:
-            name = self.source.get()
             iterations = _numbers(self.iterations.get(), None, int, "iterations")
             subsets = _numbers(self.subsets.get(), None, int, "subsets")
             if min(iterations + subsets) < 1:
                 raise ValueError("Iterations and subsets must be positive")
             options = dict(iterations=iterations, subsets=subsets, radius_mm=self.radius.get(),
+                           background_gap_mm=self.background_gap.get(),
                            source_count=self.source_count.get(), threshold=self.threshold.get() / 100,
-                           search_radius_mm=self.search_radius.get())
+                           search_radius_mm=self.search_radius.get(), record_steps=self.record_steps.get())
             compare = self.compare_cor.get()
-            record_steps = self.record_steps.get()
-            matrix = self._grid_value(self.matrix.get(), int, "matrix", listmode=name == self.LISTMODE)
-            voxel = self._grid_value(self.voxel.get(), float, "voxel size", listmode=name == self.LISTMODE)
-            if name == self.LISTMODE:
-                if compare:
-                    raise ValueError("Estimated COR comparison requires a sinogram")
-                path, shape, spacing, energy, settings = self.app.listmode_panel.settings()
-                if matrix:
-                    shape = matrix[::-1] if len(matrix) == 3 else (shape[0], matrix[0], matrix[0])
-                if voxel:
-                    spacing = voxel if len(voxel) == 3 else (voxel[0], voxel[0], spacing[2])
-                spec = path, shape, spacing, energy, settings
-            else:
-                entry = self.app.get_sinogram(name)
-                if entry is None:
-                    raise ValueError("Load a sinogram or select a list-mode NPZ")
-                snapshot = self.app.recon_panel._snapshot()
-                if matrix or voxel:
-                    mode = "matrix+voxel" if matrix and voxel else "matrix" if matrix else "voxel"
-                    snapshot["grid_mode"] = SimpleNamespace(get=lambda: mode)
-                    if matrix:
-                        snapshot["n_img"] = SimpleNamespace(get=lambda: matrix[0])
-                    if voxel:
-                        snapshot["voxel_mm"] = SimpleNamespace(get=lambda: voxel[0])
-                if name != self.app.recon_panel.var_sino.get():
-                    self._use_acquisition_response(snapshot, entry)
+            has_sinogram = any(name != self.LISTMODE for name in names)
+            if compare and not has_sinogram:
+                raise ValueError("Estimated COR comparison requires a sinogram")
+            snapshot = self.app.recon_panel._snapshot() if has_sinogram else None
+            matrix, voxel = self.matrix.get(), self.voxel.get()
+            jobs = [(name, self._sweep_spec(name, matrix, voxel, snapshot)) for name in names]
         except (ValueError, tk.TclError) as exc:
             self.app.error(str(exc))
             return
 
         def run():
-            history = None
-            try:
-                history = IterationHistory()
-                spec_options = dict(options, history=history, record_steps=record_steps)
-                if name == self.LISTMODE:
-                    output_name, rows, regions, summary = self._run_listmode(spec, spec_options)
-                else:
-                    output_name = name
-                    rows, regions, summary = self._run_sinogram(entry, snapshot, spec_options, compare)
-                self.app._q.put(("convergence_ready", (output_name, rows, regions, summary, history)))
-            except Exception as exc:
-                if history is not None:
-                    history.close()
-                self.app.error(f"Convergence: {exc}")
+            outputs, failures = [], []
+            for name, spec in jobs:
+                history = None
+                try:
+                    history = IterationHistory()
+                    spec_options = dict(options, history=history)
+                    self.app.log(f"[convergence] Sweeping {name}")
+                    if name == self.LISTMODE:
+                        output_name, rows, regions, summary = self._run_listmode(spec, spec_options)
+                    else:
+                        output_name = name
+                        rows, regions, summary = self._run_sinogram(*spec, spec_options, compare)
+                    outputs.append((output_name, rows, regions, summary, history))
+                except Exception as exc:
+                    if history is not None:
+                        history.close()
+                    failures.append(f"{name}: {exc}")
+            if outputs:
+                self.app._q.put(("convergence_ready", outputs))
+            else:
                 self.app._q.put(("convergence_failed", None))
+            if failures:
+                self.app.error("Convergence:\n" + "\n".join(failures))
 
         if self.app.start_worker("EM convergence", run):
-            self.status.set("Computing the reference and iteration checkpoints...")
+            self.status.set(f"Computing iteration checkpoints for {len(jobs)} acquisition(s)...")
 
     @staticmethod
     def _use_acquisition_response(snapshot, entry):
@@ -366,6 +427,7 @@ class ConvergencePanel(ttk.Frame):
 
         reference, geometry = run(min(4, max(options["iterations"])), 1)
         regions = detect_source_regions(reference, spacing, radius_mm=options["radius_mm"],
+                                        background_gap_mm=options["background_gap_mm"],
                                         source_count=options["source_count"],
                                         relative_threshold=options["threshold"], support=reference > 0,
                                         search_radius_mm=options["search_radius_mm"] or None)
@@ -376,7 +438,7 @@ class ConvergencePanel(ttk.Frame):
                                   cor_mm=None, label="List mode", recording=recording)
         return path.stem, rows, regions, str(geometry["sensitivity"])
 
-    def show_result(self, name, rows, regions, summary, history=None):
+    def _register_result(self, name, rows, regions, summary, history):
         result_name = self.app._unique_name(name, self.results)
         if history is not None:
             from Gimntools.GimnRec.iteration_history import grid_labels
@@ -387,85 +449,112 @@ class ConvergencePanel(ttk.Frame):
                 row.update(grid)
             self.app.iteration_panel.add_history(result_name, history)
         self.results[result_name] = rows, len(regions), summary
+        return result_name
+
+    def show_results(self, outputs):
+        names = tuple(self._register_result(*output) for output in outputs)
         self.history_combo.configure(values=list(self.results))
-        self.history.set(result_name)
+        self.history.set(names[-1])
+        self.comparison = names if len(names) > 1 else ()
         self._select_result()
 
+    def _compare_results(self):
+        if len(self.results) < 2:
+            self.app.error("Run convergence sweeps for at least two results first")
+            return
+        selected = BatchSelection(
+            self, [{"name": name} for name in self.results], title="Compare convergence",
+            prompt="Each selected result will occupy one column of the comparison.",
+        ).result
+        if selected:
+            names = tuple(item["name"] for item in selected)
+            self.history.set(names[0])
+            self.comparison = names if len(names) > 1 else ()
+            self._select_result()
+
+    def _select_single_result(self):
+        self.comparison = ()
+        self._select_result()
+
+    def _selected_results(self):
+        names = self.comparison or (self.history.get(),)
+        return {name: self.results[name][0] for name in names if name in self.results}
+
     def _select_result(self):
-        rows, count, summary = self.results[self.history.get()]
-        point = convergence_operating_point(rows)
-        suggestion = f" Suggested checkpoint: {point[0]} iteration(s), {point[1]} subset(s)." if point else ""
-        self.status.set(f"Detected sources: {count}. {summary}{suggestion}")
+        if self.comparison:
+            count = max(self.results[name][1] for name in self.comparison)
+            self.status.set(f"Comparing {len(self.comparison)} results.")
+        else:
+            rows, count, summary = self.results[self.history.get()]
+            point = convergence_operating_point(rows)
+            suggestion = f" Suggested checkpoint: {point[0]} iteration(s), {point[1]} subset(s)." if point else ""
+            self.status.set(f"Detected sources: {count}. {summary}{suggestion}")
         self.source_view.configure(values=["All", *map(str, range(1, count + 1))])
         self.selected_source.set("All")
         self.redraw()
 
-    def redraw(self):
-        from matplotlib.pyplot import get_cmap
+    def _resize_plot(self, _event=None):
+        width = max(self.plot_view.winfo_width(), self._plot_minimum[0])
+        height = max(self.plot_view.winfo_height(), self._plot_minimum[1])
+        self.plot_view.itemconfigure(self._plot_window, width=width, height=height)
+        self.plot_view.configure(scrollregion=(0, 0, width, height))
 
-        self.figure.clear()
-        signal, noise = self.figure.subplots(2, 1, sharex=True)
-        result = self.results.get(self.history.get())
-        if result is None:
-            self.figure.suptitle("Run a convergence sweep to compare EM settings.")
-        else:
-            rows, _, _ = result
-            group = {}
-            for row in rows:
-                if self.selected_source.get() in ("All", str(row["source"])):
-                    group.setdefault((row["case"], row["source"], row["subsets"]), []).append(row)
-            contrast = "cnr" if self.metric.get() == "CNR" else "contrast_pct"
-            key = "updates" if self.x_axis.get() == "Subset updates" else "iterations"
-            cmap = get_cmap(self.palette.get())
-            marker = None if self.style.get() == "Lines" else "o"
-            line = "None" if self.style.get() == "Points" else "-"
-            for i, ((case, source, subsets), points) in enumerate(group.items()):
-                x = [row[key] for row in points]
-                color = cmap((i % 10) / 9)
-                label = f"Source {source} · {subsets} subset(s) · {case}"
-                signal.plot(x, [row[contrast] for row in points], linestyle=line,
-                            marker=marker, markersize=3.5, color=color, label=label)
-                noise.plot(x, [row["noise_pct"] for row in points], linestyle=line,
-                           marker=marker, markersize=3.5, color=color)
-            if group and self.legend.get() != "off":
-                signal.legend(loc=self.legend.get(), prop={"family": self.font.get(), "size": 8})
-        signal.set_title(self.title.get() or self.history.get(), fontfamily=self.font.get())
-        signal.set_ylabel(self.metric.get(), fontfamily=self.font.get())
-        noise.set_ylabel("Background noise (%)", fontfamily=self.font.get())
-        noise.set_xlabel(self.x_axis.get(), fontfamily=self.font.get())
-        for axes in (signal, noise):
-            axes.grid(True, alpha=0.22)
-            for label in axes.get_xticklabels() + axes.get_yticklabels():
-                label.set_fontfamily(self.font.get())
+    def _metrics(self, selected):
+        return convergence_metrics(self.metric.get(), self.noise_metric.get(), comparison=len(selected) > 1)
+
+    def _draw_chart(self, figure, selected, metrics):
+        draw_convergence_chart(
+            figure, selected, metrics, x_axis=self.x_axis.get(), source=self.selected_source.get(),
+            title=self.title.get(), family=self.font.get(), legend=self.legend.get(),
+            style=self.style.get(), palette=self.palette.get(),
+        )
+
+    def redraw(self):
+        selected = self._selected_results()
+        metrics = self._metrics(selected)
+        self._plot_minimum = (max(360, 245 * len(selected)), 145 * len(metrics))
+        self._resize_plot()
+        self._draw_chart(self.figure, selected, metrics)
+        self.plot_view.xview_moveto(0)
+        self.plot_view.yview_moveto(0)
         self.canvas.draw_idle()
 
+    def _export_stem(self):
+        return "convergence-comparison" if self.comparison else f"{Path(self.history.get()).name}-convergence"
+
     def _save_csv(self):
-        result = self.results.get(self.history.get())
-        if result is None:
+        selected = self._selected_results()
+        if not selected:
             return
         path = self.app.session.choose(
             "convergence.table.save", filedialog.asksaveasfilename, parent=self, defaultextension=".csv",
-            initialfile=f"{Path(self.history.get()).name}-convergence.csv", filetypes=[("CSV", "*.csv")],
+            initialfile=f"{self._export_stem()}.csv", filetypes=[("CSV", "*.csv")],
         )
         if path:
             try:
-                save_convergence_csv(path, result[0])
+                rows = ([dict(acquisition=name, **row) for name, series in selected.items() for row in series]
+                        if self.comparison else next(iter(selected.values())))
+                save_convergence_csv(path, rows)
             except OSError as exc:
                 self.app.error(str(exc))
 
     def _save_figure(self):
-        if self.history.get() not in self.results:
+        selected = self._selected_results()
+        if not selected:
             return
         path = self.app.session.choose(
             "figure.save", filedialog.asksaveasfilename, parent=self, defaultextension=".png",
-            initialfile=f"{Path(self.history.get()).name}-convergence.png",
+            initialfile=f"{self._export_stem()}.png",
             filetypes=[("PNG", "*.png"), ("PDF", "*.pdf"), ("SVG", "*.svg")],
         )
         if path:
             try:
-                self.redraw()
+                metrics = self._metrics(selected)
+                size = (max(7, 3.4 * len(selected)), max(5, 2.25 * len(metrics)))
+                figure = Figure(figsize=size, constrained_layout=True)
+                self._draw_chart(figure, selected, metrics)
                 if self.app.appearance:
-                    self.app.appearance.style_figure(self.figure)
-                self.figure.savefig(path, dpi=self.dpi.get())
+                    self.app.appearance.style_figure(figure)
+                figure.savefig(path, dpi=self.dpi.get())
             except (OSError, ValueError, tk.TclError) as exc:
                 self.app.error(str(exc))

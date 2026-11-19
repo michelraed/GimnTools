@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.ndimage import gaussian_filter, maximum_filter
 
+DEFAULT_BACKGROUND_GAP_MM = 3.
+
 
 @dataclass(frozen=True)
 class SourceRegion:
@@ -14,20 +16,23 @@ class SourceRegion:
     axial: tuple
     foreground: tuple
     background: tuple
+    background_gap_mm: float | None = None
 
 
 def detect_source_regions(volume, spacing, *, radius_mm=2., source_count=0,
-                          relative_threshold=0.25, search_radius_mm=None, support=None):
+                          relative_threshold=0.25, search_radius_mm=None, support=None,
+                          background_gap_mm=DEFAULT_BACKGROUND_GAP_MM):
     """Locate smoothed local peaks in 3D, separated by two ROI radii.
 
     Regions are fixed once on a low-iteration reference image. Background
-    is a local annulus excluding nearby sources and unmodeled voxels.
+    is a local shell with a transverse exclusion zone around every source.
     """
     image = np.asarray(volume, dtype=float)
     step = np.asarray(spacing, dtype=float)[::-1]
     if (image.ndim != 3 or not image.size or not np.isfinite(image).all()
             or step.shape != (3,) or not np.isfinite(step).all() or np.any(step <= 0)
             or not np.isfinite(radius_mm) or radius_mm <= 0
+            or not np.isfinite(background_gap_mm) or background_gap_mm <= 0
             or not 0 < relative_threshold <= 1 or source_count < 0):
         raise ValueError("Check the source ROI radius, voxel spacing and detection settings")
     allowed = np.ones(image.shape, dtype=bool) if support is None else np.broadcast_to(support, image.shape).copy()
@@ -70,30 +75,38 @@ def detect_source_regions(volume, spacing, *, radius_mm=2., source_count=0,
     if not centres:
         raise ValueError("No source met the detection threshold. Set an expected source count or lower the threshold")
 
-    distances = [((z - p[0]) * step[0])**2 + ((y - p[1]) * step[1])**2
-                 + ((x - p[2]) * step[2])**2 for p in centres]
-    clear = np.minimum.reduce(distances) >= (1.65 * radius_mm)**2
+    transverse = [((y - p[1]) * step[1])**2 + ((x - p[2]) * step[2])**2 for p in centres]
+    inner = radius_mm + background_gap_mm
+    outer = inner + 1.95 * radius_mm
+    clear = np.minimum.reduce(transverse) >= inner**2
     regions = []
-    for index, distance in zip(centres, distances):
+    for index, in_plane in zip(centres, transverse):
+        distance = ((z - index[0]) * step[0])**2 + in_plane
         foreground = (distance <= radius_mm**2) & allowed
-        background = (distance <= (3.6 * radius_mm)**2) & clear & allowed
+        background = (distance <= outer**2) & clear & allowed
         if np.count_nonzero(background) < 8:
-            background = clear & allowed
+            p = tuple(int(i) for i in index)
+            raise ValueError(f"Fewer than 8 background voxels near source {p}. "
+                             "Check the source ROI, background gap and search radius.")
         axial = tuple(np.flatnonzero(np.any(foreground | background, axis=(1, 2))))
         regions.append(SourceRegion(tuple(int(i) for i in index), axial,
                                     tuple(np.flatnonzero(foreground[k]) for k in axial),
-                                    tuple(np.flatnonzero(background[k]) for k in axial)))
+                                    tuple(np.flatnonzero(background[k]) for k in axial),
+                                    background_gap_mm))
     return regions
 
 
-def _winsor_stats(pieces):
-    samples = np.concatenate(pieces) if pieces else np.empty(0)
-    if not len(samples):
+def _sample_stats(samples):
+    if samples.size == 0:
         return np.nan, np.nan
-    if len(samples) >= 12:
+    return float(np.mean(samples)), float(np.std(samples, ddof=1)) if samples.size > 1 else np.nan
+
+
+def _winsor_stats(samples):
+    if samples.size >= 12:
         limits = np.quantile(samples, [0.05, 0.95])
         samples = np.clip(samples, *limits)
-    return float(np.mean(samples)), float(np.std(samples, ddof=1)) if len(samples) > 1 else np.nan
+    return _sample_stats(samples)
 
 
 def convergence_series(run, regions, iterations, subsets, *, cor_mm, label, recording=None):
@@ -126,15 +139,21 @@ def convergence_series(run, regions, iterations, subsets, *, cor_mm, label, reco
                 run(iterations[-1], subset, collect, update_callback=write)
         for iteration in iterations:
             for source, (signal, background) in enumerate(samples[iteration], 1):
-                mean, _ = _winsor_stats(signal)
+                mean, _ = _winsor_stats(np.concatenate(signal) if signal else np.empty(0))
+                background = np.concatenate(background) if background else np.empty(0)
                 bg, noise = _winsor_stats(background)
+                raw_bg, raw_noise = _sample_stats(background)
                 rows.append({
                     "case": label, "cor_mm": cor_mm, "source": source, "iterations": iteration,
                     **dict(zip(("z_index", "y_index", "x_index"), regions[source - 1].center_zyx)),
                     "subsets": subset, "updates": iteration * subset,
                     "signal": mean, "background": bg, "background_sd": noise,
+                    "background_voxels": background.size,
+                    "background_gap_mm": regions[source - 1].background_gap_mm,
+                    "background_raw_mean": raw_bg, "background_raw_sd": raw_noise,
                     "contrast_pct": 100 * (mean - bg) / bg if bg > 0 else np.nan,
                     "noise_pct": 100 * noise / bg if bg > 0 else np.nan,
+                    "background_cv_pct": 100 * raw_noise / raw_bg if raw_bg > 0 else np.nan,
                     "cnr": (mean - bg) / noise if noise > 0 else np.nan,
                 })
     return rows

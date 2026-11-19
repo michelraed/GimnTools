@@ -66,6 +66,7 @@ def test_switch_font_restore_controls_and_remember_dialog_folders(tmp_path, monk
         classic.listmode_panel.matrix.set("31 35 39")
         classic.convergence_panel.subsets.set("1, 3, 6")
         classic.convergence_panel.matrix.set("63")
+        classic.convergence_panel.noise_metric.set("Classical CV (%)")
         classic.sino_panel.ctrl.cmap.set("gray")
         classic.dicom_panel.equipment.set("GIMN_PET_2")
         classic.gate.cfg_form.vars["radius"].set("71.2")
@@ -86,6 +87,7 @@ def test_switch_font_restore_controls_and_remember_dialog_folders(tmp_path, monk
         assert themed.listmode_panel.matrix.get() == "31 35 39"
         assert themed.convergence_panel.subsets.get() == "1, 3, 6"
         assert themed.convergence_panel.matrix.get() == "63"
+        assert themed.convergence_panel.noise_metric.get() == "Classical CV (%)"
         assert themed.sino_panel.ctrl.cmap.get() == "gray"
         assert themed.dicom_panel.equipment.get() == "GIMN_PET_2"
         assert themed.gate.cfg_form.get_config()["radius"] == 71.2

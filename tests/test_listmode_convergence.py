@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from Gimntools.GimnRec.convergence import convergence_series, detect_source_regions
+from Gimntools.GimnRec.convergence import SourceRegion, convergence_series, detect_source_regions
 from Gimntools.GimnRec.corrections import estimate_sinogram_cor
 from Gimntools.GimnRec.listmode import EVENT_COLUMNS, _ray_matrix, load_listmode, reconstruct_listmode
 from Gimntools.GimnRec.reconstructor import siddon_reconstructor
@@ -97,6 +97,56 @@ def test_regions_and_checkpoints_reject_hot_outlier_and_report_contrast():
     assert rows[-1]["updates"] == 12
     assert rows[-1]["contrast_pct"] > rows[0]["contrast_pct"] > 0
     assert 1 <= rows[-1]["background"] < 1.25
+
+
+def test_background_cv_classical_and_winsorized_use_the_same_roi():
+    background = np.r_[np.linspace(1., 3., 19), 40.]
+    image = np.r_[50., background][None, :]
+    region = SourceRegion((0, 0, 0), (0,), (np.array([0]),), (np.arange(1, image.size),))
+
+    def run(iterations, subsets, checkpoint):
+        checkpoint(0, iterations, image)
+
+    row, = convergence_series(run, [region], [1], [1], cor_mm=None, label="Point")
+    winsor = np.clip(background, *np.quantile(background, [.05, .95]))
+    assert row["background_voxels"] == background.size
+    assert row["background_raw_mean"] == pytest.approx(background.mean())
+    assert row["background_raw_sd"] == pytest.approx(background.std(ddof=1))
+    assert row["background_cv_pct"] == pytest.approx(100 * background.std(ddof=1) / background.mean())
+    assert row["noise_pct"] == pytest.approx(100 * winsor.std(ddof=1) / winsor.mean())
+    assert row["noise_pct"] < row["background_cv_pct"]
+    assert row["cnr"] == pytest.approx((50. - winsor.mean()) / winsor.std(ddof=1))
+
+
+def test_background_roi_stays_away_from_all_source_rois_in_mm():
+    spacing = (0.8, 1.1, 2.0)
+    z, y, x = np.ogrid[:15, :31, :41]
+    sources = ((7, 16, 16), (7, 16, 24))
+    volume = sum(np.exp(-((z - zi)**2 + (y - yi)**2 + (x - xi)**2) / 2)
+                 for zi, yi, xi in sources)
+    regions = detect_source_regions(volume, spacing, radius_mm=2., background_gap_mm=4., source_count=2)
+    assert {region.center_zyx for region in regions} == set(sources)
+    for region in regions:
+        for k, indices in zip(region.axial, region.background):
+            coords = np.column_stack((np.full(indices.size, k), *np.unravel_index(indices, volume.shape[1:])))
+            for center in sources:
+                distance = np.linalg.norm((coords[:, 1:] - center[1:]) * np.array(spacing[1::-1]), axis=1)
+                assert np.all(distance >= 6. - 1e-12)
+        assert region.background_gap_mm == 4.
+    with pytest.raises(ValueError, match="Fewer than 8 background voxels"):
+        detect_source_regions(volume, spacing, radius_mm=2., background_gap_mm=60.)
+
+
+@pytest.mark.parametrize("background", [[], [2.], [0., 0.]])
+def test_background_cv_is_undefined_without_two_voxels_and_a_positive_mean(background):
+    image = np.array([[5., *background]])
+    region = SourceRegion((0, 0, 0), (0,), (np.array([0]),), (np.arange(1, image.size),))
+
+    def run(iterations, subsets, checkpoint):
+        checkpoint(0, iterations, image)
+
+    row, = convergence_series(run, [region], [1], [1], cor_mm=None, label="Point")
+    assert np.isnan(row["noise_pct"]) and np.isnan(row["background_cv_pct"])
 
 
 def test_sensitivity_floor_keeps_zero_support_after_smoothing():
@@ -218,5 +268,49 @@ def test_reconstruction_workspace_listmode_and_convergence(tmp_path, monkeypatch
         steps = viewer.histories["coincidences"].runs["List mode", 2]
         assert steps.read(2, 2).shape == (9, 11, 13)
         assert steps.spacing == (0.9, 1.1, 1.2)
+        from csv import DictReader
+        from types import SimpleNamespace
+        from Gimntools.GimnRec.ui import em_panels
+
+        p.noise_metric.set("Both")
+        monkeypatch.setattr(em_panels, "BatchSelection",
+                            lambda _parent, entries, **_kwargs: SimpleNamespace(result=entries))
+        p._compare_results()
+        assert p.comparison == ("Point", "coincidences")
+        axes = np.asarray(p.figure.axes).reshape(4, 2)
+        assert [axis.get_title() for axis in axes[0]] == ["Point", "coincidences"]
+        assert [axis.get_ylabel() for axis in axes[:, 0]] == [
+            "Contrast (%)", "CNR", "Robust background CV (%)", "Classical background CV (%)"
+        ]
+        assert axes[2, 0].get_shared_y_axes().joined(*axes[2, :])
+        data = p.results["Point"][0]
+        signal = [row for row in data if row["case"] == "Saved COR" and row["source"] == 1 and row["subsets"] == 1]
+        np.testing.assert_allclose(axes[3, 0].lines[0].get_ydata(), [row["background_cv_pct"] for row in signal])
+        csv_path = tmp_path / "comparison.csv"
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **_: str(csv_path))
+        p._save_csv()
+        with csv_path.open() as stream:
+            rows = list(DictReader(stream))
+        assert {row["acquisition"] for row in rows} == {"Point", "coincidences"}
+        assert {"noise_pct", "background_cv_pct"}.issubset(rows[0])
+        figure_path = tmp_path / "comparison.pdf"
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **_: str(figure_path))
+        p._save_figure()
+        assert figure_path.read_bytes().startswith(b"%PDF")
+        p.history.set("Point")
+        p._select_single_result()
+        assert not p.comparison and len(p.figure.axes) == 3
+
+        p.matrix.set("21")
+        p.voxel.set("1")
+        p.subsets.set("1")
+        p.iterations.set("1")
+        p.record_steps.set(False)
+        p._start_batch()
+        app._drain()
+        assert not errors, errors
+        assert len(p.comparison) == 2
+        assert p.comparison == ("Point_2", "coincidences_2")
+        assert len(p.figure.axes) == 8
     finally:
         app.destroy()

@@ -43,7 +43,7 @@ except ModuleNotFoundError:
 import numpy as np
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -63,6 +63,7 @@ from Gimntools.GimnRec.detector_response import (
 )
 from Gimntools.GimnRec.storage import Store, dumps
 from Gimntools.GimnRec.ui.rendering import plot_canvas, show_image
+from Gimntools.GimnRec.ui.selection import BatchSelection as _BatchSinograms
 from Gimntools.GimnRec.ui.session import DesktopSession, SessionToolbar
 from Gimntools.GimnRec.filters import FBP_WINDOWS, PAD_MODES, resolve_pad_length
 
@@ -1386,34 +1387,6 @@ class SinogramPanel(ttk.Frame):
 # ===========================================================================
 #  Reconstruction tab (+ save) — operates on the shared sinogram
 # ===========================================================================
-
-class _BatchSinograms(simpledialog.Dialog):
-    def __init__(self, parent, entries, *, title, prompt, hint=None):
-        self.entries = entries
-        self.prompt = prompt
-        self.hint = hint
-        super().__init__(parent, title=title)
-
-    def body(self, frame):
-        ttk.Label(frame, text=self.prompt, wraplength=450).pack(anchor="w")
-        holder = ttk.Frame(frame)
-        holder.pack(fill=tk.BOTH, expand=True, pady=6)
-        self.list = tk.Listbox(holder, selectmode=tk.EXTENDED, width=58,
-                               height=min(12, len(self.entries)), exportselection=False)
-        scrollbar = ttk.Scrollbar(holder, orient=tk.VERTICAL, command=self.list.yview)
-        self.list.configure(yscrollcommand=scrollbar.set)
-        self.list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        for entry in self.entries:
-            self.list.insert(tk.END, entry["name"])
-        self.list.selection_set(0, tk.END)
-        if self.hint:
-            ttk.Label(frame, text=self.hint, style="Hint.TLabel").pack(anchor="w")
-        return self.list
-
-    def apply(self):
-        self.result = tuple(self.entries[i] for i in self.list.curselection())
-
 
 class ReconstructionPanel(ttk.Frame):
     def __init__(self, master, app):
@@ -3476,8 +3449,10 @@ class ReconUI(tk.Tk):
         self.plot_panel = PlotReconPanel(self.notebook, self)
         self.nema_panel = NemaPanel(self.notebook, self)
         from Gimntools.GimnRec.ui.dicom_panel import DicomPanel
+        from Gimntools.GimnRec.ui.pseudo_panel import PseudoSimulatorPanel
 
         self.dicom_panel = DicomPanel(self.notebook, self)
+        self.pseudo_panel = PseudoSimulatorPanel(self.notebook, self)
         self.notebook.add(self.gate, text="GATE")
         self.notebook.add(self.petsys, text="PETSYS")
         self.notebook.add(self.sino_panel, text="Sinogram")
@@ -3486,6 +3461,7 @@ class ReconUI(tk.Tk):
         self.notebook.add(self.plot_panel, text="Plot Recon")
         self.notebook.add(self.nema_panel, text="NEMA FWHM")
         self.notebook.add(self.profiles_panel, text="Profiles")
+        self.notebook.add(self.pseudo_panel, text="Pseudo-simulator")
 
         self.log_text = tk.Text(self, height=4 if themed else 7,
                                 state="disabled", font="TkTextFont")
@@ -3555,10 +3531,12 @@ class ReconUI(tk.Tk):
             "sinogram": (self.sino_panel, "var_click"),
             "volume": (self.recon_panel, "var_recon_name var_fmt"),
             "listmode": (self.listmode_panel, "path matrix voxel center energy_enabled energy iterations subsets relaxation ratio_cap"),
-            "convergence": (self.convergence_panel, "iterations subsets radius source_count threshold search_radius "
-                            "matrix voxel record_steps compare_cor x_axis metric title font legend style palette dpi"),
+            "convergence": (self.convergence_panel, "iterations subsets radius background_gap source_count threshold search_radius "
+                            "matrix voxel record_steps compare_cor x_axis metric noise_metric title font legend style palette dpi"),
             "iteration_viewer": (self.iteration_panel, "plane fixed_scale"),
             "dicom": (self.dicom_panel, "study equipment"),
+            "pseudo": (self.pseudo_panel, "phantom_type diameter height sectors sector_angles rods spheres contrast geometry "
+                       "primaries steps arc start_angle seed hit_mode root_format root_path gate_unit gate_global"),
             "profiles": (self.profiles_panel, "var_name var_pesq var_exp var_fmt"),
             "nema": (self.nema_panel, "plane roi_shape side radius"),
             "plot": (self.plot_panel, "v_aspect v_row_title_pos v_fs_title v_fs_row v_fs_label v_fs_tick v_fs_cbar "
@@ -3586,6 +3564,8 @@ class ReconUI(tk.Tk):
         self.session.watch_notebook("ui.tab", self.notebook)
         self.session.watch_notebook("ui.reconstruction_tab", self.recon_workspace)
         self.session.watch_notebook("ui.petsys_tab", self.petsys.notebook)
+        self.pseudo_panel.preview()
+        self.session.watch_notebook("ui.pseudo_tab", self.pseudo_panel.notebook)
 
     def _acquisition_snapshot(self, fmt):
         tab = getattr(self, fmt)
@@ -3780,7 +3760,7 @@ class ReconUI(tk.Tk):
                     self.plot_panel.refresh_available()
                     self.dicom_panel.refresh()
                 elif kind == "convergence_ready":
-                    self.convergence_panel.show_result(*payload)
+                    self.convergence_panel.show_results(payload)
                 elif kind == "convergence_failed":
                     self.convergence_panel.status.set("The sweep could not be completed.")
                 elif kind == "listmode_ready":
@@ -3789,6 +3769,8 @@ class ReconUI(tk.Tk):
                 elif kind == "dicom_ready":
                     self.dicom_panel.export_ready(payload)
                     self.log(f"[DICOM] saved series in {payload}")
+                elif kind == "pseudo_complete":
+                    self.pseudo_panel.complete(payload)
                 elif kind == "persist":
                     self._save_files()
         except queue.Empty:
@@ -3987,7 +3969,9 @@ class ReconUI(tk.Tk):
 
                 if sweep is not None:
                     from functools import partial
-                    from Gimntools.GimnRec.convergence import convergence_series, detect_source_regions
+                    from Gimntools.GimnRec.convergence import (
+                        DEFAULT_BACKGROUND_GAP_MM, convergence_series, detect_source_regions,
+                    )
 
                     if max(sweep["subsets"]) > r.n_ang:
                         raise ValueError(f"The sweep can use at most {r.n_ang} subsets for this sinogram")
@@ -4006,6 +3990,7 @@ class ReconUI(tk.Tk):
                         regions = detect_source_regions(
                             reference, spacing,
                             radius_mm=sweep["radius_mm"], source_count=sweep["source_count"],
+                            background_gap_mm=sweep.get("background_gap_mm", DEFAULT_BACKGROUND_GAP_MM),
                             relative_threshold=sweep["threshold"],
                             search_radius_mm=sweep.get("search_radius_mm") or srange / 2, support=support)
                         if history is not None:

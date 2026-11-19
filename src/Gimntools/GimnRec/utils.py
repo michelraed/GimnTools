@@ -72,9 +72,8 @@ def _lor_bins(distance, angle, axial, shape, radial_half):
             + angular[valid].astype(np.intp))
 
 
-def _petsys_chunk(start, *, data, space, rsectors, local_rotation, origin,
-                  plane, energy_range, radial_half):
-    block = slice(start, start + _LOR_CHUNK_SIZE)
+def _petsys_points(data, block, space, rsectors, local_rotation, origin, energy_range):
+    """Transform energy-selected GimnROOT hits into the shared object frame."""
     chips = [data[f"chipID_{hit}"][block] for hit in (1, 2)]
     energies = [data[f"energyCorrected_{hit}"][block] for hit in (1, 2)]
     e_min, e_max = energy_range
@@ -96,11 +95,17 @@ def _petsys_chunk(start, *, data, space, rsectors, local_rotation, origin,
             for chip in np.unique(ids):
                 group = ids == chip
                 coords[group] = space.detectors[rsectors[chip]].apply(coords[group])
-            points.append(gantry.apply(coords)[:, plane])
+            points.append(gantry.apply(coords))
+    return points, accepted
 
+
+def _petsys_chunk(start, *, data, space, rsectors, local_rotation, origin,
+                  plane, energy_range, radial_half):
+    block = slice(start, start + _LOR_CHUNK_SIZE)
+    points, accepted = _petsys_points(data, block, space, rsectors, local_rotation, origin, energy_range)
     if not points:
         return np.empty(0), np.empty(0), np.empty(0, dtype=int), np.empty(0, dtype=int)
-    distance, angle = _lor_coordinates(*points)
+    distance, angle = _lor_coordinates(*(coords[:, plane] for coords in points))
     axial = data["slice_1"][block][accepted]
     if not np.issubdtype(axial.dtype, np.integer):
         # Preserve truncation toward zero and the scalar reader's error on non-finite slices.
@@ -168,8 +173,7 @@ def _gate_centers(space, cfg, rsectors):
             for sector, name in rsectors.items() if name in space.detectors}
 
 
-def _gate_chunk(start, *, data, space, centers, step_deg, slice_axis, radial_half, axial_width):
-    block = slice(start, start + _LOR_CHUNK_SIZE)
+def _gate_points(data, block, space, centers, step_deg):
     points = []
     axial = None
     if centers is not None:
@@ -196,6 +200,12 @@ def _gate_chunk(start, *, data, space, centers, step_deg, slice_axis, radial_hal
         angles = -step_deg * data["runID"][block].astype(np.int64)
         rotation = ROT.from_euler(space.rotate_along, angles[:, None], degrees=True)
         points = [rotation.apply(coords) for coords in points]
+    return points, axial
+
+
+def _gate_chunk(start, *, data, space, centers, step_deg, slice_axis, radial_half, axial_width):
+    block = slice(start, start + _LOR_CHUNK_SIZE)
+    points, axial = _gate_points(data, block, space, centers, step_deg)
     if axial is None:
         # Direct/cross-plane axial bins use the mean of the two positions.
         nz = space.sinogram.shape[0]
@@ -218,6 +228,13 @@ def _gate_sinogram(data, space, cfg, rsectors, step_deg, slice_axis, workers):
                         radial_half=float(cfg.get("sino_range_mm", cfg["crystal_size"][1])) / 2,
                         axial_width=float(cfg["crystal_size"][1]))
     return _collect_lor_chunks(processor, space.sinogram, total, workers)
+
+
+def _gate_run_step(config):
+    # GeneralGlobalPosition already stores hits in the object frame.
+    if config["process_as"] == "GeneralGlobalPosition":
+        return 0.
+    return (360 / config["rotation_angles"]) / config["detNum"]
 
 
 def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
@@ -266,12 +283,7 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
             c = root["Coincidences"].arrays(parameters, library="np")
         if detector_config["process_as"] in ("GateGlobalPositions","PaulGlobalPosition","GeneralGlobalPosition"):
             PETSYS.set_matrix(matrix)
-        # astep is only used by the process_as branches that rotate the gantry
-        # per runID; GeneralGlobalPosition does not, so don't require detNum there.
-        if detector_config["process_as"] != "GeneralGlobalPosition":
-            astep = (360/detector_config['rotation_angles'])/detector_config['detNum']
-        else:
-            astep = 0.0
+        astep = _gate_run_step(detector_config)
         if geometry_out is not None:
             from Gimntools.GimnRec.detector_response import acquisition_geometry
             runs = np.unique(c["runID"])
