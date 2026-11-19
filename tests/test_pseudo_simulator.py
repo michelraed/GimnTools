@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from Gimntools.GimnRec.listmode import load_listmode
+from Gimntools.GimnRec.listmode import load_listmode, reconstruct_listmode
+from Gimntools.GimnRec.listmode_response import prepare_listmode_response
 from Gimntools.GimnRec.phantoms import make_phantom
 from Gimntools.GimnRec.pseudo_simulator import _interaction, simulate_listmode
 from Gimntools.GimnRec.root_listmode import export_root_listmode
@@ -98,6 +99,42 @@ def test_acquisition_rotates_source_and_preserves_geometry(tmp_path, fmt):
         assert json.loads(archive["metadata_json"].item())["format"] == fmt
     rays, _ = load_listmode(a)
     np.testing.assert_array_equal(rays, hits[:, [0, 1, 2, 4, 5, 6]])
+
+
+def test_pseudo_crystal_response_recovers_uniform_cylinder_without_phantom_prior(tmp_path):
+    path = tmp_path / "uniform.npz"
+    cfg = dict(config("PETSYS"), sipm_pixel_n=[4, 4], crystal_size=[20., 13.44, 13.44])
+    phantom = make_phantom("Homogeneous", 10., 10.)
+    simulate_listmode(path, phantom, cfg, ANGLES, MAPPING, primaries=90000, steps=6, seed=7)
+    rays, meta = load_listmode(path, (500., 520.))
+    simulator = meta["detector_model"]
+    assert len(simulator.event_steps) == len(rays)
+    simulator.metadata.pop("phantom")
+    shape, spacing = (15, 15, 15), (.84,) * 3
+    response = prepare_listmode_response(rays, shape, spacing, (0.,) * 3, simulator)
+    assert len(response.operators) == 6
+    assert response.event_rows.shape == (len(rays),)
+    rng = np.random.default_rng(5)
+    a = response.operators[0]
+    x, y = rng.random(a.shape[1]), rng.random(a.shape[0])
+    np.testing.assert_allclose((a @ x) @ y, x @ (a.T @ y), rtol=1e-12)
+    assert np.ptp(response.sensitivity) > 0
+
+    baseline, _ = reconstruct_listmode(rays, shape, spacing, iterations=4, subsets=2)
+    corrected, geometry = reconstruct_listmode(rays, shape, spacing, detector_model=response,
+                                               iterations=4, subsets=2)
+    mlem, stats = reconstruct_listmode(rays, shape, spacing, detector_model=response,
+                                      iterations=1, relaxation=1.)
+    assert mlem.ravel() @ response.sensitivity == pytest.approx(stats["traced_events"], rel=2e-6)
+    coords = (np.arange(15) - 7) * .84
+    z, y, x = np.meshgrid(coords, coords, coords, indexing="ij")
+    inner = (x*x + y*y <= 3.5**2) & (np.abs(z) <= 3.)
+
+    def cv(volume):
+        return volume[inner].std(ddof=1) / volume[inner].mean()
+
+    assert geometry["sensitivity"] == "finite crystal-pair response"
+    assert cv(corrected) < .55 * cv(baseline)
 
 
 def test_export_petsys_preserves_aligned_hits_and_matches_binning(tmp_path):

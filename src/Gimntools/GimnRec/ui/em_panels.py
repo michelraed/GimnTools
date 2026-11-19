@@ -19,7 +19,8 @@ from Gimntools.GimnRec.convergence_plot import (
 )
 from Gimntools.GimnRec.corrections import estimate_sinogram_cor
 from Gimntools.GimnRec.iteration_history import IterationHistory
-from Gimntools.GimnRec.listmode import load_listmode, reconstruct_listmode
+from Gimntools.GimnRec.listmode import CALIBRATION_FIELDS, load_listmode, reconstruct_listmode
+from Gimntools.GimnRec.listmode_response import prepare_listmode_response
 from Gimntools.GimnRec.ui.rendering import plot_canvas
 from Gimntools.GimnRec.ui.selection import BatchSelection
 from Gimntools.GimnRec.ui.session import SessionToolbar
@@ -82,8 +83,8 @@ class ListmodePanel(ttk.Frame):
         _field(controls, "Subsets (1 = MLEM)", self.subsets)
         _field(controls, "EM relaxation", self.relaxation)
         _field(controls, "EM ratio cap", self.ratio_cap)
-        ttk.Label(self, text="A calibrated sensitivity map or normalization LORs can be included in the NPZ. "
-                  "Otherwise the model uses uniform sensitivity.",
+        ttk.Label(self, text="Pseudo-simulator files use their saved detector response and sensitivity. "
+                  "Other files use NPZ calibration when supplied, or uniform sensitivity.",
                   wraplength=600, style="Hint.TLabel").pack(anchor="w", pady=9)
         ttk.Button(self, text="Reconstruct list mode", style="Primary.TButton",
                    command=self._start).pack(anchor="w")
@@ -119,10 +120,19 @@ class ListmodePanel(ttk.Frame):
         def run():
             try:
                 rays, metadata = load_listmode(path, energy)
-                calibration = {k: metadata.pop(k) for k in
-                               ("sensitivity", "normalization_lors", "normalization_weights")}
+                calibration = {k: metadata.pop(k) for k in CALIBRATION_FIELDS}
+                reported = 0
+
+                def model_progress(done, total):
+                    nonlocal reported
+                    milestone = done * 4 // total
+                    if milestone > reported:
+                        reported = milestone
+                        self.app.log(f"[List mode] Scanner response · {done:,}/{total:,} detector pairs")
+
                 volume, geometry = reconstruct_listmode(
                     rays, shape, spacing, iterations=iterations, subsets=subsets,
+                    model_progress=model_progress,
                     progress=lambda it: self.app.log(f"[List mode] {path.stem} · iteration {it}/{iterations}"),
                     **options, **calibration)
                 geometry.update(metadata)
@@ -409,7 +419,7 @@ class ConvergencePanel(ttk.Frame):
     def _run_listmode(spec, options):
         path, shape, spacing, energy, settings = spec
         rays, meta = load_listmode(path, energy)
-        calibration = {k: meta[k] for k in ("sensitivity", "normalization_lors", "normalization_weights")}
+        calibration = {k: meta[k] for k in CALIBRATION_FIELDS}
 
         def run(iterations, subsets, callback=None, *, update_callback=None):
             def visit(iteration, volume):
@@ -425,6 +435,10 @@ class ConvergencePanel(ttk.Frame):
                 **settings, **calibration,
             )
 
+        if calibration["detector_model"] is not None:
+            calibration["detector_model"] = prepare_listmode_response(
+                rays, shape, spacing, settings["center"], calibration["detector_model"],
+            )
         reference, geometry = run(min(4, max(options["iterations"])), 1)
         regions = detect_source_regions(reference, spacing, radius_mm=options["radius_mm"],
                                         background_gap_mm=options["background_gap_mm"],

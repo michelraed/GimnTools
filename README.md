@@ -324,6 +324,17 @@ The coordinates are already in the object frame, with XYZ aligned to the
 two sinogram plane axes and the slice axis. Use **Open in List mode** to
 send the exported NPZ to Reconstruction.
 
+List-mode reconstruction automatically uses the scanner and poses saved in
+pseudo-simulator archives, including existing ones. For segmented readout
+positions it integrates the candidate rays through the active volumes of
+both crystals, accounting for interaction depth and attenuation. The same
+operator and its transpose handle projection and backprojection. Sensitivity
+includes the exposure of all detector pairs at each pose, including pairs
+that recorded zero coincidences. The reconstruction uses the chosen voxel
+grid and the scanner geometry independently of the simulated phantom.
+Exact interaction positions use Siddon rays with the simulated scanner
+sensitivity.
+
 ### Convergence
 
 **Reconstruction → Convergence** runs selected EM checkpoints for a

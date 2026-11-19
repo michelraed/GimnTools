@@ -1,6 +1,6 @@
 """Geometric PET coincidence simulation using the configured detector montage."""
 
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import math
 from operator import index
 
@@ -35,21 +35,21 @@ def _clip(lo, hi, position, direction, lower, upper):
 
 
 @njit(cache=True)
-def _interaction(p, d, lower, upper, grid, pitch, pixels, face, travel,
-                 center_hits, segmented):
-    """Sample the first interaction through consecutive active crystal intervals."""
+def _crystal_trace(p, d, lower, upper, grid, pitch, pixels, face, travel,
+                   center_hits, segmented):
+    """Find the first interaction or the total active path when travel is infinite."""
     lo, hi = 0., np.inf
     for axis in range(3):
         lo, hi = _clip(lo, hi, p[axis], d[axis], lower[axis], upper[axis])
         if hi <= lo:
-            return np.inf, np.zeros(3)
+            return np.inf, np.zeros(3), 0.
     if not segmented:
         if travel >= hi - lo:
-            return np.inf, np.zeros(3)
+            return np.inf, np.zeros(3), hi - lo
         hit = p + (lo + travel) * d
         if center_hits:
             hit[0] = lower[0]
-        return lo + travel, hit
+        return lo + travel, hit, travel
 
     uv = grid @ p[1:]
     duv = grid @ d[1:]
@@ -57,11 +57,12 @@ def _interaction(p, d, lower, upper, grid, pitch, pixels, face, travel,
     for j in range(2):
         lo, hi = _clip(lo, hi, uv[j], duv[j], -half[j], half[j])
         if hi <= lo:
-            return np.inf, np.zeros(3)
+            return np.inf, np.zeros(3), 0.
 
     # Walk grid cells in ray order. Pitch defines the cells, while the
     # smaller crystal face leaves inactive gaps between neighbouring cells.
     current = lo
+    traversed = 0.
     while current < hi:
         centers = np.empty(2)
         next_at = hi
@@ -87,12 +88,21 @@ def _interaction(p, d, lower, upper, grid, pitch, pixels, face, travel,
                 coords = np.empty(3)
                 coords[0] = lower[0]
                 coords[1:] = grid.T @ centers
-                return interaction, coords
-            return interaction, p + interaction * d
+                return interaction, coords, traversed + travel
+            return interaction, p + interaction * d, traversed + travel
         travel -= active_length
+        traversed += active_length
         current = next_at
 
-    return np.inf, np.zeros(3)
+    return np.inf, np.zeros(3), traversed
+
+
+@njit(cache=True)
+def _interaction(p, d, lower, upper, grid, pitch, pixels, face, travel,
+                 center_hits, segmented):
+    distance, hit, _ = _crystal_trace(p, d, lower, upper, grid, pitch, pixels, face,
+                                     travel, center_hits, segmented)
+    return distance, hit
 
 
 @njit(cache=True, nogil=True)
@@ -122,16 +132,27 @@ def _coincidences(points, directions, travel, heads, lower, upper, grid,
     return endpoints[:count]
 
 
-def simulate_listmode(path, phantom, config, detector_angles, mapping, *,
-                      primaries, steps=None, arc_deg=None, start_deg=0., seed=0,
-                      hit_mode="Match acquisition", progress=None, chunk_size=16384):
-    """Acquire the same number of annihilations per pose and save detected pairs."""
+@dataclass(frozen=True)
+class DetectorGeometry:
+    axis: str
+    axes: tuple
+    names: tuple
+    angles: np.ndarray
+    heads: np.ndarray
+    lower: np.ndarray
+    upper: np.ndarray
+    grid: np.ndarray
+    pitch: np.ndarray
+    pixels: np.ndarray
+    face: float
+    mu: float
+    segmented: bool
+
+
+def detector_geometry(config, detector_angles, mapping):
+    """Resolve the same crystal layout for acquisition and reconstruction."""
     fmt = config.get("data_from")
     require_valid_detector_config(config, fmt)
-    primaries, seed, chunk_size = index(primaries), index(seed), index(chunk_size)
-    if primaries < 1 or seed < 0 or chunk_size < 1:
-        raise ValueError("Use positive primaries per step and a nonnegative random seed")
-    poses = acquisition_plan(config, steps, arc_deg, start_deg)
     axis, axes = object_axes(config)
     response = crystal_response_settings(config)
     names = tuple(dict.fromkeys(name for name in mapping.values() if name is not None))
@@ -148,8 +169,6 @@ def simulate_listmode(path, phantom, config, detector_angles, mapping, *,
     depth, size_y, size_z = config["crystal_size"]
     lower = np.array([front, -size_y / 2, -size_z / 2])
     upper = np.array([front + depth, size_y / 2, size_z / 2])
-    if phantom.diameter_mm / 2 >= front:
-        raise ValueError("The phantom radius must be smaller than the inner detector radius")
     segmented = config["crystal_type"] == "segmented"
     if not segmented and config["crystal_type"] != "monolithic":
         raise ValueError("Choose segmented or monolithic crystals in the acquisition tab")
@@ -162,6 +181,22 @@ def simulate_listmode(path, phantom, config, detector_angles, mapping, *,
     theta = np.deg2rad(config.get("det_z_rotation", 0.) if fmt == "PETSYS" else 0.)
     sine, cosine = math.sin(theta), math.cos(theta)
     grid = np.array([[sine, cosine], [cosine, -sine]])
+    return DetectorGeometry(axis, axes, names, angles, heads, lower, upper, grid, pitch, pixels,
+                            response.face_width_mm, response.mu_per_mm, segmented)
+
+
+def simulate_listmode(path, phantom, config, detector_angles, mapping, *,
+                      primaries, steps=None, arc_deg=None, start_deg=0., seed=0,
+                      hit_mode="Match acquisition", progress=None, chunk_size=16384):
+    """Acquire the same number of annihilations per pose and save detected pairs."""
+    geometry = detector_geometry(config, detector_angles, mapping)
+    if phantom.diameter_mm / 2 >= geometry.lower[0]:
+        raise ValueError("The phantom radius must be smaller than the inner detector radius")
+    primaries, seed, chunk_size = index(primaries), index(seed), index(chunk_size)
+    if primaries < 1 or seed < 0 or chunk_size < 1:
+        raise ValueError("Use positive primaries per step and a nonnegative random seed")
+    poses = acquisition_plan(config, steps, arc_deg, start_deg)
+    fmt = config["data_from"]
     if hit_mode not in ("Match acquisition", "Crystal centres", "Interaction positions"):
         raise ValueError("Unknown detector position output mode")
     center_hits = hit_mode == "Crystal centres" or (
@@ -171,30 +206,31 @@ def simulate_listmode(path, phantom, config, detector_angles, mapping, *,
     metadata = {
         "source": "pseudo-simulator", "format": fmt, "phantom": asdict(phantom),
         "detector_config": {key: np.asarray(value).tolist() for key, value in config.items()},
-        "detector_angles_deg": dict(zip(names, angles.tolist())),
+        "detector_angles_deg": dict(zip(geometry.names, geometry.angles.tolist())),
         "detector_mapping": {int(key): name for key, name in mapping.items() if name is not None},
-        "object_axes": ["xyz"[a] for a in axes], "rotation_axis": axis,
+        "object_axes": ["xyz"[a] for a in geometry.axes], "rotation_axis": geometry.axis,
         "hit_positions": "readout plane" if center_hits else "first interaction",
-        "mu_511_mm_inv": response.mu_per_mm, "seed": seed, "primaries_per_step": primaries,
+        "mu_511_mm_inv": geometry.mu, "seed": seed, "primaries_per_step": primaries,
         "poses": [], "model": "isotropic back-to-back 511 keV photons, first crystal interaction",
     }
-    scanner_axes = np.argsort(axes)
+    scanner_axes = np.argsort(geometry.axes)
 
     def batches():
         for step, angle in enumerate(poses):
-            rotation = Rotation.from_euler(axis, angle, degrees=True)
+            rotation = Rotation.from_euler(geometry.axis, angle, degrees=True)
             inverse = rotation.inv()
             count = 0
             for offset in range(0, primaries, chunk_size):
                 size = min(chunk_size, primaries - offset)
                 points = rotation.apply(phantom.sample(rng, size)[:, scanner_axes])
                 directions = unit_directions(rng, size)
-                travel = rng.exponential(1 / response.mu_per_mm, (size, 2, len(heads)))
-                hits = _coincidences(points, directions, travel, heads, lower, upper, grid,
-                                     pitch, pixels, response.face_width_mm, center_hits, segmented)
+                travel = rng.exponential(1 / geometry.mu, (size, 2, len(geometry.heads)))
+                hits = _coincidences(points, directions, travel, geometry.heads, geometry.lower,
+                                     geometry.upper, geometry.grid, geometry.pitch, geometry.pixels,
+                                     geometry.face, center_hits, geometry.segmented)
                 if len(hits):
-                    first_hit = inverse.apply(hits[:, :3])[:, axes]
-                    second_hit = inverse.apply(hits[:, 3:])[:, axes]
+                    first_hit = inverse.apply(hits[:, :3])[:, geometry.axes]
+                    second_hit = inverse.apply(hits[:, 3:])[:, geometry.axes]
                     yield event_rows(first_hit, second_hit, (511., 511.)), angle, step
                     count += len(hits)
             pose = {"step": step, "angle_deg": float(angle), "primaries": primaries, "coincidences": count}

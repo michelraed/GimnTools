@@ -1,5 +1,6 @@
 """Three-dimensional list-mode EM from coincidence endpoints in millimetres."""
 
+import json
 from pathlib import Path
 from zipfile import BadZipFile
 
@@ -10,6 +11,25 @@ from scipy.spatial.transform import Rotation
 
 
 EVENT_COLUMNS = ("x1", "y1", "z1", "E1", "x2", "y2", "z2", "E2")
+CALIBRATION_FIELDS = ("sensitivity", "normalization_lors", "normalization_weights", "detector_model")
+
+
+def _simulator_model(read, accepted):
+    description = read("metadata_json")
+    try:
+        info = json.loads(description.item()) if description is not None else None
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(info, dict) or info.get("source") != "pseudo-simulator":
+        return None
+    step_index = read("step_index")
+    required = {"detector_config", "detector_angles_deg", "detector_mapping", "poses", "hit_positions"}
+    if (not required <= info.keys() or step_index is None or step_index.shape != accepted.shape
+            or not np.issubdtype(step_index.dtype, np.integer)):
+        raise ValueError("The pseudo-simulator NPZ lacks its detector geometry or per-event acquisition steps")
+    from Gimntools.GimnRec.listmode_response import SimulatedListmode
+
+    return SimulatedListmode(info, step_index[accepted])
 
 
 def load_listmode(path, energy_window=None):
@@ -64,10 +84,11 @@ def load_listmode(path, energy_window=None):
                 raise ValueError("Specify either sensitivity or normalization_lors")
             if norm_weights is not None and norm_lors is None:
                 raise ValueError("normalization_weights requires normalization_lors")
+            simulator = _simulator_model(read, good)
             return rays, {"total_events": len(data), "accepted_events": len(rays),
                           "energy_window_kev": energy_window,
                           "sensitivity": sensitivity, "normalization_lors": norm_lors,
-                          "normalization_weights": norm_weights}
+                          "normalization_weights": norm_weights, "detector_model": simulator}
     except (KeyError, AttributeError, BadZipFile) as exc:
         raise ValueError("Select a list-mode NPZ containing events or x1,y1,z1,E1,x2,y2,z2,E2") from exc
 
@@ -161,25 +182,33 @@ def _ray_matrix(rays, shape_xyz, spacing, corner):
     return csr_matrix(packed, shape=(len(rays), int(np.prod(shape_xyz))))
 
 
-def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
-                         iterations=5, subsets=1, relaxation=0.8, ratio_cap=1e6,
-                         sensitivity=None, normalization_lors=None, normalization_weights=None,
-                         cache_bytes=128 * 1024**2, progress=None, checkpoint=None, update_callback=None):
-    """Reconstruct a (z, y, x) volume with matched 3D Siddon operators.
-
-    The likelihood integral is a voxel sensitivity map or the backprojection
-    of independent scanner normalization LORs in the object frame. Without
-    them the approximation is uniform sensitivity on illuminated voxels.
-    Subsets randomly partition events, drawing the corresponding fraction
-    of global sensitivity. Endpoint geometry is shared by forward and adjoint.
-    """
-    rays = np.asarray(rays, dtype=float)
+def _volume_grid(shape, spacing, center):
     shape = tuple(shape)
     spacing, center = np.asarray(spacing, dtype=float), np.asarray(center, dtype=float)
     if (len(shape) != 3 or any(int(n) != n or n < 1 for n in shape)
             or spacing.shape != (3,) or center.shape != (3,)
             or not np.isfinite([spacing, center]).all() or np.any(spacing <= 0)):
         raise ValueError("Enter a positive 3D matrix and voxel spacing and a finite FOV centre")
+    shape_xyz = np.asarray(shape[::-1], dtype=np.int64)
+    if np.prod(shape_xyz) >= np.iinfo(np.int32).max:
+        raise ValueError("The volume exceeds the 3D projector index range")
+    return shape_xyz, spacing, center, center - shape_xyz * spacing / 2
+
+
+def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
+                         iterations=5, subsets=1, relaxation=0.8, ratio_cap=1e6,
+                         sensitivity=None, normalization_lors=None, normalization_weights=None,
+                         detector_model=None, model_progress=None, cache_bytes=128 * 1024**2,
+                         progress=None, checkpoint=None, update_callback=None):
+    """Reconstruct a (z, y, x) volume with matched 3D Siddon operators.
+
+    A saved pseudo-simulator acquisition supplies the detector-pair response
+    and scanner sensitivity for the selected grid. Other inputs can supply
+    voxel sensitivity or independent scanner normalization LORs. Otherwise
+    the approximation is uniform sensitivity on illuminated voxels.
+    """
+    rays = np.asarray(rays, dtype=float)
+    shape_xyz, spacing, center, corner = _volume_grid(shape, spacing, center)
     if (rays.ndim != 2 or rays.shape[1] != 6 or not len(rays)
             or not np.isfinite(rays).all()):
         raise ValueError("List-mode LORs must be a finite nonempty N×6 array")
@@ -188,18 +217,22 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
             or not 0 < relaxation <= 1 or not np.isfinite(ratio_cap) or ratio_cap <= 0):
         raise ValueError("Check iterations, subsets, EM relaxation and ratio cap")
 
-    shape = tuple(map(int, shape))
-    shape_xyz = np.asarray(shape[::-1], dtype=np.int64)
+    shape = tuple(shape_xyz[::-1])
     num_voxels = int(np.prod(shape_xyz))
-    if num_voxels >= np.iinfo(np.int32).max:
-        raise ValueError("The volume exceeds the 3D projector index range")
-    corner = center - shape_xyz * spacing / 2
     block_size = min(8192, max(1, 2**20 // int(shape_xyz.sum())))
     order = np.random.default_rng(0).permutation(len(rays)) if subsets > 1 else None
     edges = np.linspace(0, len(rays), subsets + 1, dtype=int)
 
     def matrix(points):
         return _ray_matrix(points, shape_xyz, spacing, corner)
+
+    response = None
+    if detector_model is not None:
+        from Gimntools.GimnRec.listmode_response import ListmodeResponse, prepare_listmode_response
+
+        response = detector_model if isinstance(detector_model, ListmodeResponse) else prepare_listmode_response(
+            rays, shape, spacing, center, detector_model, progress=model_progress,
+        )
 
     sensitivity_model = "uniform"
     if sensitivity is not None:
@@ -220,42 +253,67 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
             stop = start + block_size
             sensitivity += matrix(reference[start:stop]).T @ weights[start:stop]
         sensitivity_model = "independent normalization LORs"
+    elif response is not None:
+        sensitivity = response.sensitivity
+        sensitivity_model = response.name
 
-    cache = {}
     support = np.zeros(num_voxels, dtype=bool)
     traced = np.zeros(subsets, dtype=np.int64)
 
-    def block(start, stop):
-        if start in cache:
-            return cache[start]
-        return matrix(rays[start:stop] if order is None else rays[order[start:stop]])
-
-    for sub, (first, last) in enumerate(zip(edges[:-1], edges[1:])):
-        for start in range(first, last, block_size):
-            a = block(start, min(start + block_size, last))
-            size = a.data.nbytes + a.indices.nbytes + a.indptr.nbytes
-            if size <= cache_bytes:
-                cache[start] = a
-                cache_bytes -= size
+    if response is not None and response.operators:
+        operators = response.operators
+        event_rows = response.event_rows if order is None else response.event_rows[order]
+        crosses = np.concatenate([np.diff(a.indptr) > 0 for a in operators])
+        offsets = np.r_[0, np.cumsum([a.shape[0] for a in operators])]
+        for a in operators:
             support[a.indices] = True
-            traced[sub] += np.count_nonzero(np.diff(a.indptr))
+        for sub, (first, last) in enumerate(zip(edges[:-1], edges[1:])):
+            traced[sub] = np.count_nonzero(crosses[event_rows[first:last]])
+
+        def blocks(sub, first, last):
+            counts = np.bincount(event_rows[first:last], minlength=len(crosses))
+            for a, lo, hi in zip(operators, offsets[:-1], offsets[1:]):
+                yield a, counts[lo:hi]
+    else:
+        cache = {}
+
+        def blocks(sub, first, last):
+            for start in range(first, last, block_size):
+                a = cache.get(start)
+                if a is None:
+                    stop = min(start + block_size, last)
+                    a = matrix(rays[start:stop] if order is None else rays[order[start:stop]])
+                yield a, 1.
+
+        for sub, (first, last) in enumerate(zip(edges[:-1], edges[1:])):
+            for start, (a, _) in zip(range(first, last, block_size), blocks(sub, first, last)):
+                size = a.data.nbytes + a.indices.nbytes + a.indptr.nbytes
+                if size <= cache_bytes:
+                    cache[start] = a
+                    cache_bytes -= size
+                support[a.indices] = True
+                traced[sub] += np.count_nonzero(np.diff(a.indptr))
     if not traced.all():
         raise ValueError("At least one subset has no LOR crossing the image. Check the FOV and coordinate frame")
     if sensitivity is None:
         sensitivity = support.astype(float)
+    elif response is not None and sensitivity is response.sensitivity:
+        support &= sensitivity > 0
     elif np.any(sensitivity[support] == 0):
         raise ValueError("Normalization has zero exposure in voxels crossed by measured LORs")
+    if not support.any():
+        raise ValueError("The data and detector response have no common image support")
     x = np.zeros(num_voxels)
     x[support] = traced.sum() / sensitivity[support].sum()
 
     for it in range(1, iterations + 1):
         for sub, (first, last) in enumerate(zip(edges[:-1], edges[1:])):
             correction = np.zeros(num_voxels)
-            for start in range(first, last, block_size):
-                a = block(start, min(start + block_size, last))
+            for a, observed in blocks(sub, first, last):
                 predicted = a @ x
                 ratio = np.divide(1., predicted, out=np.zeros_like(predicted), where=predicted > 0)
                 np.minimum(ratio, ratio_cap, out=ratio)
+                ratio *= observed
                 correction += a.T @ ratio
             exposure = (last - first) / len(rays)
             update = correction[support] / (sensitivity[support] * exposure)
