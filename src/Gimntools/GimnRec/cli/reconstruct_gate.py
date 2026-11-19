@@ -189,7 +189,7 @@ def main(argv=None):
         build_parser().error("--n-dist-out must be >= 1")
     from Gimntools.GimnRec.detector_response import response_from_arguments
     try:
-        detector_response = response_from_arguments(args, methods)
+        detector_response = response_from_arguments(args, methods, detector_config)
     except ValueError as exc:
         build_parser().error(str(exc))
     if detector_response is not None and detector_response.mu_per_mm is not None and args.geom_norm:

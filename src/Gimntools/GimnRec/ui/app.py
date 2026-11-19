@@ -57,6 +57,10 @@ except Exception:
     _ALL_CMAPS = ["gray", "hot", "viridis", "jet", "magma", "inferno", "plasma", "bone"]
 
 from Gimntools.GimnRec.data_loaders import generate_rsector_angle
+from Gimntools.GimnRec.detector_response import (
+    CRYSTAL_MATERIALS, CRYSTAL_MU_511, DEFAULT_FACE_WIDTH_MM,
+    crystal_material, crystal_response_settings,
+)
 from Gimntools.GimnRec.storage import Store
 from Gimntools.GimnRec.ui.rendering import show_image
 from Gimntools.GimnRec.filters import FBP_WINDOWS, PAD_MODES, resolve_pad_length
@@ -363,7 +367,8 @@ def roi_metrics(data, shape, geom, sp_v, sp_h):
 # ===========================================================================
 
 _COMMON_COMBOS = [("crystal_type", ["segmented", "monolithic"]),
-                  ("rotate_along", ["x", "y", "z"])]
+                  ("rotate_along", ["x", "y", "z"]),
+                  ("crystal_material", CRYSTAL_MATERIALS)]
 _GATE_COMBOS = [("process_as", PROCESS_AS_OPTIONS)]
 _COMMON_SCALARS = [  # (key, label, kind)
     ("pla_thickness",  "pla_thickness (mm)", "float"),
@@ -373,6 +378,8 @@ _COMMON_SCALARS = [  # (key, label, kind)
     ("detNum",         "detNum",             "int"),
     ("Half_FOV",       "Half_FOV (mm)",      "float"),
     ("sino_range_mm",  "sino_range_mm (mm)", "float"),
+    ("crystal_face_width_mm", "Segment face (mm)", "float"),
+    ("mu_511_mm_inv", "μ override (mm⁻¹)", "float"),
 ]
 _PETSYS_SCALARS = [
     ("e_min",          "e_min (keV)",        "float"),
@@ -391,6 +398,7 @@ _CFG_DEFAULTS = {
     "Half_FOV": "53", "sino_range_mm": "53", "e_min": "450", "e_max": "650",
     "det_z_rotation": "90", "crystal_size": "20, 26.88, 26.88",
     "sipm_pitch": "3.36, 3.36", "sipm_pixel_n": "8, 8",
+    "crystal_material": "LYSO", "crystal_face_width_mm": str(DEFAULT_FACE_WIDTH_MM),
 }
 
 
@@ -403,6 +411,7 @@ class DetectorConfigForm(ttk.LabelFrame):
         self.app = app
         self.fmt = fmt.lower()
         self.vars = {}
+        self._extra = {}
 
         combos = _COMMON_COMBOS + (_GATE_COMBOS if self.fmt == "gate" else [])
         scalars = _COMMON_SCALARS + ([] if self.fmt == "gate" else _PETSYS_SCALARS)
@@ -437,7 +446,7 @@ class DetectorConfigForm(ttk.LabelFrame):
         self._array_kinds = {k: kind for k, _l, kind in _CFG_ARRAYS}
 
     def get_config(self):
-        cfg = {"data_from": "GATE" if self.fmt == "gate" else "PETSYS"}
+        cfg = dict(self._extra, data_from=self.fmt.upper())
         for key in self.vars:
             txt = self.vars[key].get().strip()
             if txt == "":
@@ -449,20 +458,25 @@ class DetectorConfigForm(ttk.LabelFrame):
                     [int(float(p)) if kind == "int" else float(p) for p in parts])
             elif key in self._scalar_kinds:
                 kind = self._scalar_kinds[key]
-                cfg[key] = int(float(txt)) if kind == "int" else float(txt)
+                val = float(txt.replace(",", "."))
+                cfg[key] = int(val) if kind == "int" else val
             else:  # combos (strings)
                 cfg[key] = txt
         return cfg
 
     def _populate(self, cfg):
-        for key in self.vars:
-            if key not in cfg:
-                continue
-            val = cfg[key]
+        source = str(cfg.get("data_from", self.fmt))
+        if source.strip().lower() != self.fmt:
+            raise ValueError(f"{source} configuration belongs in the {source.upper()} tab")
+        material = crystal_material(cfg.get("crystal_material"))
+        self._extra = {key: value for key, value in cfg.items()
+                       if key not in self.vars and key != "data_from"}
+        for key, var in self.vars.items():
+            val = material if key == "crystal_material" else cfg.get(key, _CFG_DEFAULTS.get(key, ""))
             if isinstance(val, (list, tuple, np.ndarray)):
-                self.vars[key].set(", ".join(str(x) for x in np.asarray(val).tolist()))
+                var.set(", ".join(str(x) for x in np.asarray(val).tolist()))
             else:
-                self.vars[key].set(str(val))
+                var.set("" if val is None else str(val))
 
     def _validate(self):
         from Gimntools.GimnRec.data_loaders import validate_detector_config
@@ -652,11 +666,39 @@ class AngleRsectorPanel(ttk.LabelFrame):
 #  GATE tab
 # ===========================================================================
 
+class AcquisitionProfilePicker(ttk.Frame):
+    def __init__(self, parent, app, fmt):
+        super().__init__(parent)
+        self.app, self.fmt = app, fmt
+        ttk.Label(self, text=f"{fmt.upper()} profile").pack(side=tk.LEFT)
+        self.selected = tk.StringVar()
+        self.combo = ttk.Combobox(self, textvariable=self.selected, state="readonly", width=24)
+        self.combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        ttk.Button(self, text="Load", command=self._load).pack(side=tk.LEFT)
+        ttk.Button(self, text="Refresh", command=app.refresh_acquisition_profiles).pack(side=tk.LEFT)
+
+    def refresh(self, profiles):
+        names = [p["name"] for p in profiles if str(p["fmt"]).strip().lower() == self.fmt]
+        self.combo.configure(values=names)
+        if self.selected.get() not in names:
+            self.selected.set("")
+        return names
+
+    def _load(self):
+        if self.selected.get():
+            try:
+                self.app.load_acquisition_profile(self.selected.get(), expected=self.fmt)
+            except ValueError as exc:
+                self.app.error(str(exc))
+
+
 class GatePanel(ttk.Frame):
     def __init__(self, master, app):
         super().__init__(master, padding=6)
         self.app = app
 
+        self.profile = AcquisitionProfilePicker(self, app, "gate")
+        self.profile.pack(fill=tk.X, pady=2)
         self.cfg_form = DetectorConfigForm(self, app, "gate")
         self.cfg_form.pack(fill=tk.X, pady=3)
 
@@ -749,6 +791,8 @@ class PetsysPanel(ttk.Frame):
         self.app = app
         self.calibration = None
 
+        self.profile = AcquisitionProfilePicker(self, app, "petsys")
+        self.profile.pack(fill=tk.X, pady=2)
         self.cfg_form = DetectorConfigForm(self, app, "petsys")
         self.cfg_form.pack(fill=tk.X, pady=3)
 
@@ -1233,8 +1277,6 @@ class ReconstructionPanel(ttk.Frame):
         self.sino_combo = ttk.Combobox(selbox, textvariable=self.var_sino,
                                        state="readonly", width=24)
         self.sino_combo.pack(fill=tk.X)
-        self.sino_combo.bind("<<ComboboxSelected>>",
-                             lambda e: self._sync_cor_from_sino())
 
         box = ttk.LabelFrame(ctrl, text="Parameters", padding=6); box.pack(fill=tk.X)
         self.v = {
@@ -1276,7 +1318,9 @@ class ReconstructionPanel(ttk.Frame):
         response_box.pack(fill=tk.X, pady=2)
         self.v.update(
             response_mode=tk.StringVar(value="Conventional"),
-            doi_mu=tk.StringVar(), doi_face=tk.StringVar(),
+            doi_material=tk.StringVar(value="LYSO"),
+            doi_mu=tk.StringVar(value=str(CRYSTAL_MU_511["LYSO"])),
+            doi_face=tk.StringVar(value=str(DEFAULT_FACE_WIDTH_MM)),
             doi_face_order=tk.StringVar(value="3"), doi_depth_order=tk.StringVar(value="3"),
             sv_lut=tk.StringVar(),
         )
@@ -1288,6 +1332,9 @@ class ReconstructionPanel(ttk.Frame):
         labeled_spin(radial, "PSF FWHM (mm)", self.v["fwhm"], 0.0, 30.0, is_double=True)
         doi = ttk.Frame(response_box)
         ttk.Label(doi, text="Uses the sinogram's detector setup.", wraplength=240).pack(anchor="w")
+        labeled_combo(doi, "Crystal material", self.v["doi_material"], CRYSTAL_MATERIALS)
+        self.v["doi_material"].trace_add("write", self._set_material_mu)
+        self._response_sino_name = None
         labeled_entry(doi, "Segment face (mm)", self.v["doi_face"])
         labeled_entry(doi, "μ at 511 keV (1/mm)", self.v["doi_mu"])
         labeled_entry(doi, "Face quadrature", self.v["doi_face_order"])
@@ -1442,6 +1489,7 @@ class ReconstructionPanel(ttk.Frame):
                           command=lambda e: self.draw())
             s.pack(fill=tk.X)
             self.scales[key] = s
+        self.var_sino.trace_add("write", lambda *_: self._sync_cor_from_sino())
 
     # ---- listas (chamadas a partir do _drain) ----
     def refresh_sino_list(self, select=None):
@@ -1476,11 +1524,22 @@ class ReconstructionPanel(ttk.Frame):
             self.app.sino_panel.on_new()
         self.app.notebook.select(self.app.sino_panel)
 
+    def _set_material_mu(self, *_):
+        self.v["doi_mu"].set(str(CRYSTAL_MU_511.get(self.v["doi_material"].get(), "")))
+
     def _sync_cor_from_sino(self):
-        """Load the COR stored on the selected sinogram into the spinbox."""
+        """Load calibration and material defaults from the selected sinogram."""
         entry = self.app.get_sinogram(self.var_sino.get())
         if entry is not None:
             self.v["cor_mm"].set(float(entry.get("cor_mm", 0.0)))
+            if self._response_sino_name != entry["name"]:
+                self._response_sino_name = entry["name"]
+                cfg = entry.get("detector_config") or {}
+                self.v["doi_material"].set(crystal_material(cfg.get("crystal_material")))
+                override = cfg.get("mu_511_mm_inv")
+                if override is not None:
+                    self.v["doi_mu"].set(str(override))
+                self.v["doi_face"].set(str(cfg.get("crystal_face_width_mm", DEFAULT_FACE_WIDTH_MM)))
         self._update_fbp_hint()
 
     def _update_fbp_hint(self):
@@ -1723,7 +1782,9 @@ class ProfilesPanel(ttk.Frame):
     def refresh(self):
         self.tree.delete(*self.tree.get_children())
         import datetime
-        for p in self.app.store.list_profiles():
+        profiles = self.app.store.list_profiles()
+        self.app.refresh_acquisition_profiles(profiles)
+        for p in profiles:
             ts = p.get("updated_at") or 0
             when = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
             self.tree.insert("", tk.END, values=(p["name"], p.get("pesquisador", ""),
@@ -1764,21 +1825,18 @@ class ProfilesPanel(ttk.Frame):
         name = self._selected()
         if not name:
             return
-        p = self.app.store.get_profile(name)
-        if not p:
+        try:
+            p = self.app.load_acquisition_profile(name)
+        except ValueError as exc:
+            self.app.error(str(exc))
             return
-        fmt = p.get("fmt", "petsys")
+        fmt = str(p["fmt"]).strip().lower()
         tab = self._tab_for(fmt)
-        tab.cfg_form._populate(p.get("detector_config") or {})
-        tab.angles.set_data(p.get("angles") or {}, p.get("rsectors") or {})
-        if fmt == "petsys" and p.get("calibration"):
-            self.app.petsys.calibration = p["calibration"]
         # restore the profile form fields
         self.var_name.set(p["name"]); self.var_pesq.set(p.get("pesquisador", ""))
         self.var_exp.set(p.get("experimento", "")); self.var_fmt.set(fmt)
         self.txt_notes.delete("1.0", tk.END); self.txt_notes.insert("1.0", p.get("notes", "") or "")
         self.app.notebook.select(tab)
-        self.app.log(f"[profile] '{name}' loaded into the {fmt.upper()} tab.")
 
     def _delete(self):
         name = self._selected()
@@ -3159,11 +3217,48 @@ class ReconUI(tk.Tk):
             "cal_bg": self.petsys.cal_bg,
             "cal_out": self.petsys.cal_out,
         }
+        self._restore_acquisition_profiles()
         self._restore_last_files()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._drain_job = self.after(120, self._drain)
         self._session_notice_job = self.after(400, self._notify_last_session)
+
+    def refresh_acquisition_profiles(self, profiles=None):
+        if profiles is None:
+            profiles = self.store.list_profiles()
+        return {fmt: getattr(self, fmt).profile.refresh(profiles) for fmt in ("gate", "petsys")}
+
+    def load_acquisition_profile(self, name, *, expected=None, remember=True):
+        profile = self.store.get_profile(name)
+        if profile is None:
+            raise ValueError(f"Profile {name!r} was not found in the database")
+        fmt = str(profile.get("fmt")).strip().lower()
+        if fmt not in ("gate", "petsys") or (expected is not None and fmt != expected):
+            raise ValueError(f"Profile {name!r} has format {fmt.upper()}. Select it in its matching tab")
+        tab = getattr(self, fmt)
+        tab.cfg_form._populate(profile["detector_config"])
+        tab.angles.set_data(profile["angles"], profile["rsectors"])
+        if fmt == "petsys":
+            tab.calibration = profile["calibration"] or None
+            tab.var_apply_corr.set(bool(tab.calibration))
+            tab.var_cal.set("")
+        tab.profile.selected.set(name)
+        if remember:
+            self.store.set_setting(f"last_profile_{fmt}", name)
+        self.log(f"[profile] '{name}' loaded into the {fmt.upper()} tab.")
+        return profile
+
+    def _restore_acquisition_profiles(self):
+        for fmt, names in self.refresh_acquisition_profiles().items():
+            previous = self.store.get_setting(f"last_profile_{fmt}")
+            canonical = next((name for name in names if name.casefold() == fmt), None)
+            name = previous if previous in names else canonical or (names[0] if len(names) == 1 else None)
+            if name:
+                try:
+                    self.load_acquisition_profile(name, expected=fmt, remember=False)
+                except (TypeError, ValueError) as exc:
+                    self.log(f"[profile] {name!r} could not be loaded: {exc}")
 
     # ---- file memory across sessions ----
     def _restore_last_files(self):
@@ -3466,13 +3561,18 @@ class ReconUI(tk.Tk):
                     lut = params["sv_lut"].get() if use_lut else None
                     if use_lut and not lut:
                         raise ValueError("Select an SV-PSF LUT file")
-                    settings = ResponseSettings(
-                        mu_per_mm=float(params["doi_mu"].get()) if use_doi else None,
-                        face_width_mm=float(params["doi_face"].get()) if use_doi else None,
-                        face_order=int(params["doi_face_order"].get()) if use_doi else 3,
-                        depth_order=int(params["doi_depth_order"].get()) if use_doi else 3,
-                        lut_path=lut, analytical=mode == "Analytical detector response",
-                    )
+                    settings = ResponseSettings(lut_path=lut)
+                    if use_doi:
+                        settings = crystal_response_settings(
+                            cfg,
+                            material=params["doi_material"].get() if "doi_material" in params else None,
+                            mu=params["doi_mu"].get(), face=params["doi_face"].get(),
+                            face_order=params["doi_face_order"].get(),
+                            depth_order=params["doi_depth_order"].get(),
+                            lut_path=lut, analytical=mode == "Analytical detector response",
+                        )
+                        self.log(f"[{entry['name']}] {settings.material}, "
+                                 f"μ={settings.mu_per_mm:.5g} mm⁻¹, face={settings.face_width_mm:.4g} mm")
                     self.log(f"[{entry['name']}] {mode} (exploratory 2D model)")
                     response = DetectorResponse(r, angles, settings, entry.get("acquisition"))
                     if norm is not None and response.reference_factors is not None:
@@ -3563,6 +3663,8 @@ class ReconUI(tk.Tk):
                 self._q.put(('reconstruction_ready', (generation, rec, source, method)))
             self.log(f"[{nm}] reconstruction ready: {vol.shape}, "
                      f"voxel {dxy:.3f}×{dxy:.3f}×{dz:.3f} mm")
+        except ValueError as exc:
+            self.error(str(exc))
         except Exception:
             self.error(traceback.format_exc())
 

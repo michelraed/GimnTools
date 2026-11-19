@@ -170,10 +170,15 @@ toolkit marks imported LUT reconstructions as exploratory.
 
 - In the GUI, build the raw sinogram first, select MLEM or OSEM, then pick
   **DOI-aware**, **Spatially variant PSF**, or **DOI + residual SV response**
-  in **Detector Response Modeling**. Supply the active segment width, a
-  verified 511 keV linear attenuation coefficient in mm⁻¹, and the LUT file
-  as applicable. Each successful reconstruction keeps its response metadata.
-- Either CLI enables DOI with `--doi-mu-mm-inv` and `--doi-face-mm`.
+  in **Detector Response Modeling**. Select **LYSO**, **BGO**, or **Custom**.
+  The starting material, attenuation override and segment width come from
+  the selected sinogram's detector configuration. Existing profiles without
+  these fields start with LYSO and a 3 mm segment face. A manually entered
+  coefficient overrides the preset. Each reconstruction keeps its response
+  settings in the output metadata.
+- Either CLI enables DOI with `--crystal-material LYSO` or
+  `--crystal-material BGO`. Override the material coefficient and active
+  width with `--doi-mu-mm-inv` and `--doi-face-mm`.
   `--doi-face-order` and `--doi-depth-order` default to 3. Use
   `--sv-psf-lut path.npz` for SV-PSF alone or alongside DOI. Legacy EM
   and the existing radial PSF are separate options.
@@ -192,6 +197,29 @@ an error when those limits are exceeded. Use a smaller reconstruction
 grid or smaller quadrature orders and check convergence before comparing
 quantitative results.
 
+
+## Crystal presets and saved profiles
+
+| Preset | Representative composition | Density (g/cm³) | μ at 511 keV (mm⁻¹) |
+| --- | --- | ---: | ---: |
+| LYSO | Lu₁.₈Y₀.₂SiO₅ | 7.10 | 0.08184 |
+| BGO | Bi₄Ge₃O₁₂ | 7.13 | 0.09629 |
+
+Coefficients were calculated by mass-weighting elemental total attenuation
+from xraylib 4.3.0 at 511 keV and multiplying by the nominal density.
+Use a coefficient for your crystal's measured composition and density if
+they differ. Material selection changes the analytical and DOI response.
+The dimensions of the detector still come from the geometry.
+
+The **PETSYS profile** and **GATE profile** pickers show only profiles
+of the matching acquisition format from the shared SQLite database. On
+startup the application restores the last loaded profile for each format.
+For older databases it uses the exact format name, or a sole profile for
+that format. Loading a PETSYS profile restores its calibration if saved.
+A newly built sinogram keeps the detector configuration that produced it,
+even if you later switch the active profile.
+
+[xraylib documentation](https://github.com/tschoonj/xraylib/wiki)
 
 ## Full analytical response and automatic LUT generation
 
@@ -215,9 +243,11 @@ exposure by default. Python callers can supply a `pose_exposure` list in
 sorted `object_angles_deg` order in the acquisition metadata.
 
 Select **Analytical detector response** in either UI, or use
-`--analytical-response` together with both DOI parameters in either
-reconstruction CLI. The reconstruction field must lie between both
-detector faces for all poses. Converge the face and depth orders on the
+`--analytical-response` in either reconstruction CLI. It uses the
+configured material and face width unless you override them. Rays contribute
+only through the gap between the detector faces for each pose. The requested
+image matrix and FOV are retained, including pixels with limited or zero
+sensitivity. Converge the face and depth orders on the
 grid you intend to use. In a synthetic check with central and displaced
 sources, the relative projection differences versus order 9 dropped
 from 7.0–7.8% at order 3 to 1.5–1.6% at order 5 for both coordinates.

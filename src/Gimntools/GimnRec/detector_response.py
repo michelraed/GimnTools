@@ -27,6 +27,56 @@ class ResponseSettings:
     depth_order: int = 3
     lut_path: str | None = None
     analytical: bool = False
+    material: str | None = None
+
+
+# Mixture mass coefficients at 511 keV from xraylib 4.3.0 CS_Total
+# and nominal densities of 7.10 g/cm³ (Lu1.8Y0.2SiO5) and 7.13 g/cm³ (Bi4Ge3O12).
+CRYSTAL_MU_511 = {"LYSO": 0.08184, "BGO": 0.09629}
+CRYSTAL_MATERIALS = (*CRYSTAL_MU_511, "Custom")
+DEFAULT_FACE_WIDTH_MM = 3.0
+
+
+def crystal_material(value):
+    name = str(value or "LYSO").strip().upper()
+    if name == "CUSTOM":
+        return "Custom"
+    if name not in CRYSTAL_MU_511:
+        raise ValueError(f"Unknown crystal material {value!r}. Choose LYSO, BGO or Custom")
+    return name
+
+
+def crystal_response_settings(config, *, material=None, mu=None, face=None,
+                              face_order=3, depth_order=3, lut_path=None, analytical=False):
+    """Fill missing response settings from the selected sinogram's detector profile."""
+    config = config or {}
+    material = crystal_material(material or config.get("crystal_material"))
+    if mu in (None, ""):
+        if material == crystal_material(config.get("crystal_material")):
+            mu = config.get("mu_511_mm_inv")
+        if mu in (None, ""):
+            mu = CRYSTAL_MU_511.get(material)
+    if face in (None, ""):
+        face = config.get("crystal_face_width_mm", DEFAULT_FACE_WIDTH_MM)
+
+    def positive(value, label):
+        try:
+            number = float(str(value).replace(",", "."))
+        except ValueError as exc:
+            raise ValueError(f"Enter a positive {label}") from exc
+        if not np.isfinite(number) or number <= 0:
+            raise ValueError(f"Enter a positive {label}")
+        return number
+
+    try:
+        face_order, depth_order = int(str(face_order)), int(str(depth_order))
+    except ValueError as exc:
+        raise ValueError("Face and depth quadrature orders must be integers in [1, 12]") from exc
+    if not (1 <= face_order <= 12 and 1 <= depth_order <= 12):
+        raise ValueError("Face and depth quadrature orders must be integers in [1, 12]")
+    return ResponseSettings(positive(mu, "511 keV attenuation coefficient in mm⁻¹"),
+                            positive(face, "segment face width in mm"),
+                            face_order, depth_order, lut_path, analytical, material)
 
 
 def acquisition_geometry(path, config, detector_angles, rsectors, first_rotation,
@@ -195,7 +245,7 @@ def _bins_at_coordinate(coordinate):
         yield int(np.floor(coordinate)), 1.0
 
 
-def _nominal_pairs(acquisition, sino_shape, sino_range, face_width, *, analytic_grid=None):
+def _nominal_pairs(acquisition, sino_shape, sino_range, face_width, *, analytic=False):
     """Enumerate transverse crystal pairs, including zero-count measurements."""
     from Gimntools.GimnRec.sinogramer import Sinogramer
     from Gimntools.GimnRec.systemSpace import systemSpace
@@ -258,7 +308,7 @@ def _nominal_pairs(acquisition, sino_shape, sino_range, face_width, *, analytic_
     front = cfg["radius"] + cfg["pla_thickness"]
     n_dist, n_ang = sino_shape
     exposure = np.asarray(acquisition.get("pose_exposure", np.ones(poses.size)), dtype=float)
-    if analytic_grid is not None:
+    if analytic:
         if (exposure.shape != poses.shape or not np.isfinite(exposure).all()
                 or np.any(exposure < 0) or not np.isfinite(exposure.sum()) or exposure.sum() <= 0):
             raise ValueError("Analytical response requires a nonnegative exposure weight per sorted pose")
@@ -279,7 +329,7 @@ def _nominal_pairs(acquisition, sino_shape, sino_range, face_width, *, analytic_
         physical_local = np.asarray(centers)[:, None] * local_tangent
         measured_local = [physical_local] * 2
     local_offsets = physical_local @ local_tangent
-    for pose, dwell in zip(poses, exposure if analytic_grid is not None else np.ones(poses.size)):
+    for pose, dwell in zip(poses, exposure if analytic else np.ones(poses.size)):
         space.rotateBy(float(pose))
         rotations = [space.global_rot * space.detectors[name] for name in heads]
         normals = [rot.apply(local_normal)[plane] for rot in rotations]
@@ -291,10 +341,6 @@ def _nominal_pairs(acquisition, sino_shape, sino_range, face_width, *, analytic_
             rot.apply(front * local_normal + local)
             for rot, local in zip(rotations, measured_local)
         ]
-        if analytic_grid is not None and any(
-            analytic_grid / 2 * np.abs(normal).sum() >= front for normal in normals
-        ):
-            raise ValueError("Analytical response requires the image field to lie between both detector faces")
         for i, (p1, measured1) in enumerate(zip(endpoints[0], bin_endpoints[0])):
             for j, (p2, measured2) in enumerate(zip(endpoints[1], bin_endpoints[1])):
                 r, phi = space.global_to_sinogram(measured1, measured2, axis)
@@ -306,7 +352,7 @@ def _nominal_pairs(acquisition, sino_shape, sino_range, face_width, *, analytic_
                         if 0 <= radial < n_dist:
                             row = radial * n_ang + (angular % n_ang)
                             segments = None
-                            if analytic_grid is not None:
+                            if analytic:
                                 segments = (local_offsets - local_offsets[i],
                                             local_offsets - local_offsets[j])
                             rows.setdefault(row, []).append(
@@ -351,8 +397,12 @@ def _pair_rays(pair, offsets, face_weights, depths, depth_weights, mu, width):
         face = face_weights[:, None] * face_weights[None, :]
         depth = depth_weights[:, None] * depth_weights[None, :]
         weights = face * depth * np.exp(-mu * (path1 + path2)) * bin_weight / length
-        i, j = np.indices(length.shape)
-        return np.column_stack((points1[i.ravel()], points2[j.ravel()])), weights.ravel()
+        # Emission is modeled in the gap between the detector fronts.
+        # Keep the requested grid and integrate only this segment of each ray.
+        front1 = points1[:, None, :] - (depths[:, None] / cosine1)[..., None] * direction
+        front2 = points2[None, :, :] + (depths[None, :] / cosine2)[..., None] * direction
+        rays = np.concatenate((front1, front2), axis=-1)
+        return rays.reshape(-1, 4), weights.ravel()
     entrance1 = offsets[:, None] - depths[:, None] * (direction @ tangent1) / cosine1
     entrance2 = offsets[None, :] + depths[None, :] * (direction @ tangent2) / cosine2
     accepted = (np.abs(entrance1) <= width / 2) & (np.abs(entrance2) <= width / 2)
@@ -375,7 +425,7 @@ def _doi_matrix(recon, angles_deg, settings, acquisition, *, analytic=False):
     shape = (recon.n_dist, recon.n_ang)
     pairs, depth = _nominal_pairs(
         acquisition, shape, recon.sino_range, width,
-        analytic_grid=recon.fov_mm if analytic else None,
+        analytic=analytic,
     )
     ray_count = sum(map(len, pairs.values())) * (settings.face_order * settings.depth_order)**2
     if ray_count > 10_000_000:
@@ -630,10 +680,12 @@ class DetectorResponse:
 
 def add_response_arguments(parser):
     group = parser.add_argument_group("Detector response (MLEM/OSEM)")
+    group.add_argument("--crystal-material", choices=CRYSTAL_MATERIALS,
+                       help="Enable DOI with a 511 keV material preset or Custom attenuation.")
     group.add_argument("--doi-mu-mm-inv", type=float,
                        help="511 keV linear attenuation coefficient in inverse mm. Enables DOI.")
     group.add_argument("--doi-face-mm", type=float,
-                       help="Active transverse crystal segment width in mm. Required with DOI.")
+                       help="Override the configured active transverse crystal segment width in mm.")
     group.add_argument("--doi-face-order", type=int, default=3)
     group.add_argument("--doi-depth-order", type=int, default=3)
     group.add_argument("--analytical-response", action="store_true",
@@ -641,19 +693,23 @@ def add_response_arguments(parser):
     group.add_argument("--sv-psf-lut", help="Spatially variant response NPZ (see detector response docs).")
 
 
-def response_from_arguments(args, methods):
-    if args.analytical_response and (args.doi_mu_mm_inv is None or args.sv_psf_lut):
-        raise ValueError("--analytical-response requires DOI parameters and a standalone projection model")
-    if args.doi_mu_mm_inv is None and not args.sv_psf_lut:
-        if args.doi_face_mm is not None:
-            raise ValueError("--doi-face-mm requires --doi-mu-mm-inv")
+def response_from_arguments(args, methods, config=None):
+    use_doi = (args.analytical_response or args.crystal_material is not None
+               or args.doi_mu_mm_inv is not None)
+    if args.analytical_response and args.sv_psf_lut:
+        raise ValueError("--analytical-response is a standalone projection model")
+    if args.doi_face_mm is not None and not use_doi:
+        raise ValueError("--doi-face-mm requires a DOI response")
+    if not use_doi and not args.sv_psf_lut:
         return None
     if args.use_psf or args.legacy_em:
         raise ValueError("DOI/SV-PSF cannot be combined with --use-psf or --legacy-em")
     if "mlem" not in methods and "osem" not in methods:
         raise ValueError("DOI/SV-PSF requires MLEM or OSEM")
-    if (args.doi_mu_mm_inv is None) != (args.doi_face_mm is None):
-        raise ValueError("Supply both --doi-mu-mm-inv and --doi-face-mm for DOI")
-    return ResponseSettings(args.doi_mu_mm_inv, args.doi_face_mm,
-                            args.doi_face_order, args.doi_depth_order, args.sv_psf_lut,
-                            analytical=args.analytical_response)
+    if not use_doi:
+        return ResponseSettings(lut_path=args.sv_psf_lut)
+    return crystal_response_settings(
+        config, material=args.crystal_material, mu=args.doi_mu_mm_inv, face=args.doi_face_mm,
+        face_order=args.doi_face_order, depth_order=args.doi_depth_order,
+        lut_path=args.sv_psf_lut, analytical=args.analytical_response,
+    )

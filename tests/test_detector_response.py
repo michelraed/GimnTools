@@ -319,10 +319,10 @@ def test_petsys_parallel_batches_preserve_counts_and_event_order(tmp_path):
     assert parallel.sum() == 2 * repeat
 
 
-def write_aligned_gimnroot(path, *, invalid=False):
+def write_aligned_gimnroot(path, *, invalid=False, poses=6, chip_ids=(4, 29)):
     from Gimntools.GimnRec.detector_response import _GIMNROOT_PIXELS
 
-    run, left, right = np.indices((6, 64, 64)).reshape(3, -1)
+    run, left, right = np.indices((poses, 64, 64)).reshape(3, -1)
     i1, j1 = _GIMNROOT_PIXELS[left].T
     i2, j2 = _GIMNROOT_PIXELS[right].T
     offsets = np.array([[0.7, -0.4], [-0.35, 0.22]])
@@ -336,12 +336,12 @@ def write_aligned_gimnroot(path, *, invalid=False):
     with uproot.recreate(path) as root:
         root.mktree("tomographicCoincidences", dict(
             SiPMPosX_1=x1, SiPMPosY_1=y1, SiPMPosX_2=x2, SiPMPosY_2=y2,
-            chipID_1=np.full(run.size, 4), chipID_2=np.full(run.size, 29),
+            chipID_1=np.full(run.size, chip_ids[0]), chipID_2=np.full(run.size, chip_ids[1]),
             channelID_1=left, channelID_2=right,
             posI_1=i1, posI_2=i2, posJ_1=j2, posJ_2=j2,  # upstream writer bug
             energyCorrected_1=np.full(run.size, 511.0),
             energyCorrected_2=np.full(run.size, 511.0),
-            angleGantry_1=run * 30.0, slice_1=j1 + j2,
+            angleGantry_1=run * (180.0 / poses), slice_1=j1 + j2,
         ))
     return offsets
 
@@ -476,3 +476,51 @@ def test_upstream_channel_indices_are_not_sequential():
 
     np.testing.assert_array_equal(_GIMNROOT_PIXELS[[0, 16, 60]], [[1, 7], [6, 6], [0, 0]])
     assert np.unique(_GIMNROOT_PIXELS, axis=0).shape == (64, 2)
+
+
+def test_analytical_large_fov_keeps_grid_and_clips_to_detector_gap(tmp_path):
+    from Gimntools.GimnRec.analytical_response import generate_analytical_lut
+    from Gimntools.GimnRec.detector_response import _pair_rays, crystal_response_settings
+
+    pair = (np.array([37.0, 0.0]), np.array([-37.0, 0.0]),
+            (np.array([1.0, 0.0]), np.array([-1.0, 0.0])),
+            (np.array([0.0, 1.0]), np.array([0.0, -1.0])),
+            (np.array([0.0]), np.array([0.0])), 90.0, 1.0)
+    rays, weights = _pair_rays(pair, np.zeros(1), np.ones(1), np.array([8.0]),
+                               np.ones(1), 0.08184, 3.0)
+    np.testing.assert_allclose(rays, [[37, 0, -37, 0]])
+    assert weights[0] > 0
+
+    cfg, det, mapping = setup_geometry("PETSYS")
+    cfg.update(sipm_pixel_n=[8, 8], crystal_size=[20, 26.88, 26.88], rotation_angles=12)
+    geometry = acquisition_geometry("synthetic", cfg, det, mapping, "y", -np.arange(12)*15)
+    r = siddon_reconstructor(np.zeros((1, 15, 180)), fov_mm=70, sino_range_mm=26.88,
+                             verbose=False)
+    angles = angle_centers(r)
+    signals = []
+    for material in ("LYSO", "BGO"):
+        settings = crystal_response_settings({}, material=material, mu="", face="", analytical=True)
+        response = DetectorResponse(r, angles, settings, geometry)
+        forward, back = response.operators(np.arange(0, r.n_ang, 2))
+        image = np.ones((r.n_img, r.n_img))
+        projection = forward(image)
+        np.testing.assert_allclose(projection.sum(), back(np.ones_like(projection)).sum())
+        signals.append(projection.sum())
+        fitting = generate_analytical_lut(r, angles, settings, geometry,
+                                          tmp_path / f"{material}.npz", sample_count=3)
+        np.testing.assert_allclose(fitting["kernels"].sum(axis=(-2, -1)), 1)
+        assert fitting["relative_error"].max() < 0.3
+        assert fitting["reference_grid"][1] == 70
+    assert signals[0] != pytest.approx(signals[1])
+
+
+def test_crystal_presets_use_profile_or_explicit_override():
+    from Gimntools.GimnRec.detector_response import crystal_response_settings
+
+    profile = {"crystal_material": "BGO", "crystal_face_width_mm": 2.9, "mu_511_mm_inv": 0.1}
+    settings = crystal_response_settings(profile)
+    assert (settings.material, settings.face_width_mm, settings.mu_per_mm) == ("BGO", 2.9, 0.1)
+    assert crystal_response_settings(profile, material="LYSO").mu_per_mm == pytest.approx(0.08184)
+    assert crystal_response_settings(profile, mu="0,09").mu_per_mm == pytest.approx(0.09)
+    with pytest.raises(ValueError, match="attenuation coefficient"):
+        crystal_response_settings({"crystal_material": "Custom"})

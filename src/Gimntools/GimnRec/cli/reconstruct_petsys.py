@@ -156,7 +156,7 @@ def main(argv=None):
         build_parser().error("--background-scale must be finite and nonnegative")
     from Gimntools.GimnRec.detector_response import response_from_arguments
     try:
-        detector_response = response_from_arguments(args, methods)
+        detector_response = response_from_arguments(args, methods, detector_config)
     except ValueError as exc:
         build_parser().error(str(exc))
     os.makedirs(args.output_dir, exist_ok=True)
