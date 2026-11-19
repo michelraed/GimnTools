@@ -619,11 +619,41 @@ class siddon_reconstructor:
                                  "(radial, angle) or (slice, radial, angle)")
         return norm, background
 
+    def _response_operators(self, angles_deg, psf_kernel, legacy, response):
+        if response is not None:
+            if response.recon is not self or not np.array_equal(response.angles, angles_deg):
+                raise ValueError("Detector response was built for a different reconstructor or angular grid")
+            if psf_kernel is not None or legacy:
+                raise ValueError("Detector response cannot be combined with radial PSF or legacy EM")
+            return response.operators
+
+        angles_rad = np.deg2rad(angles_deg)
+
+        def operators(indices=None):
+            angles = angles_rad if indices is None else angles_rad[indices]
+            return (lambda image: self._project(image, angles, psf_kernel),
+                    lambda sino: self._backproject(sino, angles, psf_kernel))
+
+        return operators
+
+    def _validate_response_support(self, response, norm, background):
+        if response is None or response.doi is None:
+            return
+        supported = np.asarray(response.doi.getnnz(axis=1)).reshape(norm.shape) > 0
+        if not np.all(supported) and np.any(
+            (self.sinogram[:, ~supported] > 0) & (background[:, ~supported] == 0)
+            & (norm[~supported] > 0)
+        ):
+            raise ValueError(
+                "DOI geometry has no modeled response for some measured bins. Check PETSYS "
+                "segment-center encoding, geometry, acquisition angles and image FOV"
+            )
+
     def mlem(self, angles_deg, iterations=80, psf_kernel=None,
              norm_sino=None,
              regularization_every=None, regularization_sigma=None,
              verbose=True, ratio_cap=1e6, relaxation=1.0, legacy=False,
-             gauss_every=None, gauss_sigma=None, background_sino=None):
+             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None):
         """
         MLEM with Siddon + radial detector response + (flood) normalization.
 
@@ -649,6 +679,9 @@ class siddon_reconstructor:
                      Sensitivity:  s = A^T . C^T . norm
                    If None, uniform efficiency is assumed (norm = 1).
 
+        response: optional DetectorResponse built for this reconstructor
+                  and angular grid. Replaces the legacy projector/PSF pair.
+
         ratio_cap: upper limit applied to the ratio y/y_est by CLIPPING
                    (not resetting). Prevents numerical blow-ups without
                    cancelling the direction of the correction. Use None to
@@ -671,21 +704,23 @@ class siddon_reconstructor:
             regularization_every, regularization_sigma,
             gauss_every, gauss_sigma,
             default_every=0, default_sigma=0.5)   # MLEM historical defaults
-        angles_rad = np.deg2rad(angles_deg)
+        forward, backward = self._response_operators(angles_deg, psf_kernel, legacy, response)()
+        self._validate_response_support(response, norm_valid, background)
         N = self.n_img
         rec = np.zeros((self.n_slices, N, N))
 
         norm = norm_valid
 
-        sens = self._backproject(norm, angles_rad, psf_kernel)
-        sens[sens < 1e-9] = 1e-9
+        sens = backward(norm)
+        if response is None:
+            sens[sens < 1e-9] = 1e-9
 
         for z in range(self.n_slices):
             y = self.sinogram[z]
             b = background[z]
             x = np.ones((N, N), dtype=np.float64)
             for it in range(iterations):
-                Ax = self._project(np.clip(x, 0, None), angles_rad, psf_kernel)
+                Ax = forward(np.clip(x, 0, None))
                 if legacy:
                     Ax_norm = Ax * norm + Ax.max() * 0.3 + b
                     Ax_norm[Ax_norm < 1e-10] = 1e-10
@@ -699,8 +734,8 @@ class siddon_reconstructor:
                     if ratio_cap is not None:
                         np.clip(ratio, 0.0, ratio_cap, out=ratio)
 
-                correction = self._backproject(ratio * norm, angles_rad, psf_kernel)
-                update = correction / sens
+                correction = backward(ratio * norm)
+                update = np.divide(correction, sens, out=np.zeros_like(x), where=sens > 0)
                 if not legacy and relaxation != 1.0:
                     update = 1.0 + relaxation * (update - 1.0)
                 x *= update
@@ -721,7 +756,7 @@ class siddon_reconstructor:
              regularization_every=None, regularization_sigma=None,
              verbose=True, ratio_cap=1e6, relaxation=1.0,
              subset_order="interleaved", warn_subsets=True, legacy=False,
-             gauss_every=None, gauss_sigma=None, background_sino=None):
+             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None):
         """
         OSEM with Siddon + radial detector response + (flood) normalization.
 
@@ -732,7 +767,8 @@ class siddon_reconstructor:
         ``gauss_every`` / ``gauss_sigma`` remain accepted as deprecated
         aliases.
 
-        norm_sino: same logic as in mlem — enters the forward model.
+        norm_sino and response: same logic as in mlem. Each angular subset
+        uses the matching rows and the transpose of its own forward operator.
 
         ratio_cap / legacy: see the mlem() docstring.
 
@@ -771,8 +807,9 @@ class siddon_reconstructor:
             regularization_every, regularization_sigma,
             gauss_every, gauss_sigma,
             default_every=5, default_sigma=0.5)   # OSEM historical defaults
-        angles_rad = np.deg2rad(angles_deg)
-        n_ang_total = len(angles_rad)
+        operators = self._response_operators(angles_deg, psf_kernel, legacy, response)
+        self._validate_response_support(response, norm_valid, background)
+        n_ang_total = len(angles_deg)
         if warn_subsets and not legacy:
             check_subset_count(n_ang_total, subsets_n)
 
@@ -786,24 +823,29 @@ class siddon_reconstructor:
         else:
             subset_idx = build_subsets(n_ang_total, subsets_n, order=subset_order)
 
-        angles_sub = [angles_rad[s] for s in subset_idx]
+        subset_operators = [operators(s) for s in subset_idx]
 
         norm_subs = [norm_valid[:, s] for s in subset_idx]
 
         sens_sub = []
-        for asub, nsub in zip(angles_sub, norm_subs):
-            s = self._backproject(nsub, asub, psf_kernel)
-            s[s < 1e-9] = 1e-9
-            sens_sub.append(s)
+        for (_, backward), nsub in zip(subset_operators, norm_subs):
+            sensitivity = backward(nsub)
+            if response is None:
+                sensitivity[sensitivity < 1e-9] = 1e-9
+            sens_sub.append(sensitivity)
+        support = np.any(np.asarray(sens_sub) > 0, axis=0) if response is not None else None
 
         for z in range(self.n_slices):
             sino_z = self.sinogram[z]
             sino_subs = [sino_z[:, s] for s in subset_idx]
             bg_subs = [background[z][:, s] for s in subset_idx]
             x = np.ones((N, N), dtype=np.float64)
+            if support is not None:
+                x[~support] = 0
             for it in range(iterations):
-                for i, (sub_sino, asub) in enumerate(zip(sino_subs, angles_sub)):
-                    Ax = self._project(np.clip(x, 0, None), asub, psf_kernel)
+                for i, (forward, backward) in enumerate(subset_operators):
+                    sub_sino = sino_subs[i]
+                    Ax = forward(np.clip(x, 0, None))
                     Ax_norm = Ax * norm_subs[i] + bg_subs[i]
                     Ax_norm[Ax_norm < 1e-10] = 1e-10
 
@@ -816,8 +858,9 @@ class siddon_reconstructor:
                         if ratio_cap is not None:
                             np.clip(coef, 0.0, ratio_cap, out=coef)
 
-                    correction = self._backproject(coef * norm_subs[i], asub, psf_kernel)
-                    update = correction / sens_sub[i]
+                    correction = backward(coef * norm_subs[i])
+                    update = np.divide(correction, sens_sub[i], out=np.ones_like(x),
+                                       where=sens_sub[i] > 0)
                     if not legacy and relaxation != 1.0:
                         update = 1.0 + relaxation * (update - 1.0)
                     x *= update

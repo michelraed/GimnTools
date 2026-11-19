@@ -1,4 +1,5 @@
 include README.md LICENSE NOTICE CITATION.cff CODE_OF_CONDUCT.md CONTRIBUTING.md CHANGELOG.md PUBLISHING_PYPI.md
+include docs/detector_response_geometry.md
 recursive-include src *.py
 recursive-include tests *.py
 recursive-include examples *.py *.json

@@ -710,9 +710,11 @@ class GatePanel(ttk.Frame):
             cfg = spec['cfg']; angles = spec['angles']; rsec = spec['rsec']
             for w in validate_detector_config(dict(cfg), "gate"):
                 self.app.log(f"[WARNING] {w}")
+            acquisition = {}
             sino, _ = coincidence_to_lor(spec['path'], cfg, angles,
                                          get_default_parameters("gate"),
-                                         rsectors=rsec, verbose=True)
+                                         rsectors=rsec, verbose=True,
+                                         geometry_out=acquisition)
             if spec['interpolate']:
                 sino = interpolate_distance(sino, n_out=spec['n_dist'],
                                             kind="conservative")
@@ -729,7 +731,9 @@ class GatePanel(ttk.Frame):
             srange = cfg.get("sino_range_mm", float(cfg["crystal_size"][1]))
             nm = spec['name'].strip() or os.path.basename(spec['path']).replace('.root','')
             self.app.set_sinogram(sino, fov, srange, source="GATE",
-                                  detector_config=cfg, name=nm, norm=norm)
+                                  detector_config=cfg, name=nm, norm=norm,
+                                  acquisition=acquisition,
+                                  rebinned=spec['interpolate'])
         except Exception:
             self.app.error(traceback.format_exc())
 
@@ -818,8 +822,13 @@ class PetsysPanel(ttk.Frame):
             for w in validate_detector_config(dict(cfg), "petsys"):
                 self.app.log(f"[WARNING] {w}")
             params = get_default_parameters("petsys")
+            acquisition = {}
             sino, _ = coincidence_to_lor(spec['path'], cfg, angles_cfg, params,
-                                         rsectors=rsec, verbose=True)
+                                         rsectors=rsec, verbose=True,
+                                         geometry_out=acquisition)
+            if spec['bg']:
+                acquisition['background'] = spec['bg']
+                acquisition['background_scale'] = spec['bg_scale']
             background = None
             if spec['bg']:
                 if not os.path.isfile(spec['bg']):
@@ -865,7 +874,8 @@ class PetsysPanel(ttk.Frame):
             self.app.set_sinogram(sino, fov, srange, source="PETSYS",
                                   detector_config=cfg, angles_override=angles, name=nm,
                                   norm=norm, background=background,
-                                  dx_cor_mm=dx, dy_cor_mm=dy)
+                                  dx_cor_mm=dx, dy_cor_mm=dy,
+                                  acquisition=acquisition)
         except Exception:
             self.app.error(traceback.format_exc())
 
@@ -1251,13 +1261,50 @@ class ReconstructionPanel(ttk.Frame):
         labeled_spin(box, "subsets (OSEM)", self.v["subsets"], 1, 64)
         labeled_spin(box, "gauss_every", self.v["gevery"], 0, 100)
         labeled_spin(box, "gauss_sigma", self.v["gsigma"], 0.0, 10.0, is_double=True)
-        labeled_spin(box, "PSF FWHM (mm)", self.v["fwhm"], 0.0, 30.0, is_double=True)
-        ttk.Checkbutton(box, text="Use PSF (radial, in the model)",
-                        variable=self.v["use_psf"]).pack(anchor="w")
         ttk.Checkbutton(box, text="Legacy EM (old behaviour)",
                         variable=self.v["legacy"]).pack(anchor="w")
         self.v["zoom"] = tk.IntVar(value=1)
         labeled_spin(box, "Z upsample (visual)", self.v["zoom"], 1, 12)
+
+        response_box = ttk.LabelFrame(ctrl, text="Detector Response Modeling", padding=6)
+        response_box.pack(fill=tk.X, pady=2)
+        self.v.update(
+            response_mode=tk.StringVar(value="Conventional"),
+            doi_mu=tk.StringVar(), doi_face=tk.StringVar(),
+            doi_face_order=tk.StringVar(value="3"), doi_depth_order=tk.StringVar(value="3"),
+            sv_lut=tk.StringVar(),
+        )
+        labeled_combo(response_box, "EM model", self.v["response_mode"],
+                      ["Conventional", "Existing radial Gaussian", "DOI-aware",
+                       "Spatially variant PSF", "DOI + residual SV response"], width=24)
+        radial = ttk.Frame(response_box)
+        labeled_spin(radial, "PSF FWHM (mm)", self.v["fwhm"], 0.0, 30.0, is_double=True)
+        doi = ttk.Frame(response_box)
+        ttk.Label(doi, text="Uses the sinogram's detector setup.", wraplength=240).pack(anchor="w")
+        labeled_entry(doi, "Segment face (mm)", self.v["doi_face"])
+        labeled_entry(doi, "μ at 511 keV (1/mm)", self.v["doi_mu"])
+        labeled_entry(doi, "Face quadrature", self.v["doi_face_order"])
+        labeled_entry(doi, "Depth quadrature", self.v["doi_depth_order"])
+        sv = ttk.Frame(response_box)
+        file_picker(sv, "SV-PSF LUT", self.v["sv_lut"], patterns=(("NPZ", "*.npz"),))
+        ttk.Label(sv, text="Exploratory until independently calibrated.",
+                  wraplength=240).pack(anchor="w")
+
+        def show_response_options(*_):
+            for frame in (radial, doi, sv):
+                frame.pack_forget()
+            if self.v["method"].get() == "fbp":
+                return
+            mode = self.v["response_mode"].get()
+            if mode == "Existing radial Gaussian":
+                radial.pack(fill=tk.X)
+            if mode in ("DOI-aware", "DOI + residual SV response"):
+                doi.pack(fill=tk.X)
+            if mode in ("Spatially variant PSF", "DOI + residual SV response"):
+                sv.pack(fill=tk.X)
+
+        self.v["response_mode"].trace_add("write", show_response_options)
+        self.v["method"].trace_add("write", show_response_options)
 
         # ---- image grid: sinogram-driven (legacy) vs volume-driven --------
         gbox = ttk.LabelFrame(ctrl, text="Image grid", padding=6)
@@ -1596,6 +1643,11 @@ class ReconstructionPanel(ttk.Frame):
             img.SetOrigin([-(arr.shape[2]*dxy)/2 + dxy/2,
                            -(arr.shape[1]*dxy)/2 + dxy/2,
                            -(arr.shape[0]*dz)/2 + dz/2])
+            geometry = (self.current_recon or {}).get("geometry", {})
+            if "detector_response" in geometry:
+                import json
+                img.SetMetaData("GimnToolsDetectorResponse",
+                                json.dumps(geometry["detector_response"]))
             sitk.WriteImage(img, path)
             self.app.log(f"[{fmt.upper()} saved] {path} "
                          f"(voxel {dxy:.3f}×{dxy:.3f}×{dz:.3f} mm)")
@@ -3148,7 +3200,8 @@ class ReconUI(tk.Tk):
 
     def set_sinogram(self, sino, fov_mm, sino_range_mm, source,
                      detector_config=None, angles_override=None, name=None,
-                     norm=None, background=None, dx_cor_mm=0.0, dy_cor_mm=0.0):
+                     norm=None, background=None, dx_cor_mm=0.0, dy_cor_mm=0.0,
+                     acquisition=None, rebinned=False):
         """Queue a complete acquisition; never update Tk state from a worker."""
         data = np.asarray(sino, dtype=np.float64).copy()
         if data.ndim != 3 or not np.isfinite(data).all() or (data < 0).any():
@@ -3169,6 +3222,7 @@ class ReconUI(tk.Tk):
             'detector_config': detector_config, 'angles': angles,
             'norm': norm, 'background': background, 'cor_mm': 0.0,
             'dx_cor_mm': float(dx_cor_mm), 'dy_cor_mm': float(dy_cor_mm),
+            'acquisition': acquisition, 'rebinned': rebinned,
         }
         if threading.current_thread() is threading.main_thread():
             self._register_sinogram(entry)
@@ -3370,24 +3424,48 @@ class ReconUI(tk.Tk):
                      f"{r.voxel_mm:.4f} mm | radial bin {r.sino_pixel:.4f} mm "
                      f"| rays/bin {r.rays_per_bin} | COR {r.cor_mm:+.4f} mm "
                      f"({r.cor_mm/r.sino_pixel:+.3f} bins)")
-            psf = None
-            if params["use_psf"].get():
-                psf = make_psf_kernel(float(params["fwhm"].get()),
-                                      srange / sino.shape[1])
+            psf, response = None, None
+            mode = params["response_mode"].get() if "response_mode" in params else "Conventional"
+            if method != "fbp":
+                use_doi = mode in ("DOI-aware", "DOI + residual SV response")
+                use_lut = mode in ("Spatially variant PSF", "DOI + residual SV response")
+                if use_doi or use_lut:
+                    from Gimntools.GimnRec.detector_response import DetectorResponse, ResponseSettings
+                    if entry.get("rebinned"):
+                        raise ValueError("Build the raw sinogram without radial interpolation for DOI/SV-PSF")
+                    if use_doi and norm is not None:
+                        raise ValueError("Build the sinogram with geometric normalization disabled for DOI")
+                    if params["legacy"].get():
+                        raise ValueError("Disable Legacy EM for DOI/SV-PSF")
+                    lut = params["sv_lut"].get() if use_lut else None
+                    if use_lut and not lut:
+                        raise ValueError("Select an SV-PSF LUT file")
+                    settings = ResponseSettings(
+                        mu_per_mm=float(params["doi_mu"].get()) if use_doi else None,
+                        face_width_mm=float(params["doi_face"].get()) if use_doi else None,
+                        face_order=int(params["doi_face_order"].get()) if use_doi else 3,
+                        depth_order=int(params["doi_depth_order"].get()) if use_doi else 3,
+                        lut_path=lut,
+                    )
+                    self.log(f"[{entry['name']}] {mode} (exploratory 2D model)")
+                    response = DetectorResponse(r, angles, settings, entry.get("acquisition"))
+                elif mode == "Existing radial Gaussian" or params["use_psf"].get():
+                    psf = make_psf_kernel(float(params["fwhm"].get()), srange / sino.shape[1])
+            em_options = {"response": response} if response is not None else {}
             if method == "osem":
                 vol = r.osem(angles, iterations=int(params["iters"].get()),
                              subsets_n=int(params["subsets"].get()), psf_kernel=psf,
                              norm_sino=norm, background_sino=background,
                              regularization_every=int(params["gevery"].get()),
                              regularization_sigma=float(params["gsigma"].get()),
-                             legacy=params["legacy"].get(), verbose=False)
+                             legacy=params["legacy"].get(), verbose=False, **em_options)
             elif method == "mlem":
                 vol = r.mlem(angles, iterations=int(params["iters"].get()),
                              psf_kernel=psf, norm_sino=norm,
                              background_sino=background,
                              regularization_every=int(params["gevery"].get()),
                              regularization_sigma=float(params["gsigma"].get()),
-                             legacy=params["legacy"].get(), verbose=False)
+                             legacy=params["legacy"].get(), verbose=False, **em_options)
             else:
                 from Gimntools.GimnRec.filters import make_fbp_filter
                 window = params["fbp_window"].get()
@@ -3435,6 +3513,9 @@ class ReconUI(tk.Tk):
                    "geometry": r.geometry(),
                    "info": f"{entry['name']} · {method} · {vol.shape} · "
                            f"COR {r.cor_mm:+.3f} mm"}
+            if response is not None:
+                rec["geometry"]["detector_response"] = response.metadata
+                rec["info"] += f" · {mode}"
             if method == "fbp":
                 rec["fbp"] = {
                     "window": window, "cutoff_nyquist": cutoff,

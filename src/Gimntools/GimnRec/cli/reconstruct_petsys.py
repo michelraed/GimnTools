@@ -98,6 +98,8 @@ def build_parser():
                    help="Volume export format (or 'none').")
     p.add_argument("--no-plots", action="store_true",
                    help="Desliga as figuras matplotlib (modo batch).")
+    from Gimntools.GimnRec.detector_response import add_response_arguments
+    add_response_arguments(p)
     return p
 
 
@@ -152,6 +154,11 @@ def main(argv=None):
         build_parser().error("--methods must specify osem,mlem,fbp (nonempty)")
     if not np.isfinite(args.background_scale) or args.background_scale < 0:
         build_parser().error("--background-scale must be finite and nonnegative")
+    from Gimntools.GimnRec.detector_response import response_from_arguments
+    try:
+        detector_response = response_from_arguments(args, methods)
+    except ValueError as exc:
+        build_parser().error(str(exc))
     os.makedirs(args.output_dir, exist_ok=True)
 
     plot_stages_fn = None if args.no_plots else plot_stages_mm
@@ -188,10 +195,11 @@ def main(argv=None):
         interpolate_radial=args.interpolate,
         cor_mm=args.cor_mm,
         background_scale=args.background_scale, methods=methods,
+        detector_response=detector_response,
     )
 
     if args.save_format != "none":
-        res_for_save = {"name": res["name"]}
+        res_for_save = {"name": res["name"], "geometry": res["geometry"]}
         for m in methods:
             if m in res:
                 res_for_save[m] = res[m]

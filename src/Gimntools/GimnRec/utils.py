@@ -46,11 +46,14 @@ def _resolve_axes(detector_config):
 
 def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
                        matrix=[128,128,128], rsectors={0:"detector-1",1:"detector-2"},
-                       first_rotation=None, verbose=False):
+                       first_rotation=None, verbose=False, *, geometry_out=None):
     """Build the (slice, distance, angle) sinogram from a ROOT file.
 
     Parameters
     ----------
+    geometry_out : dict or None
+        If provided, receives a snapshot of the geometry and raw acquisition
+        poses for optional detector response modeling.
     first_rotation : str or None
         Axis used to place the detectors initially. If None, uses the same
         axis as rotate_along (the geometrically consistent choice: detector
@@ -62,6 +65,8 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
     # thousands of events with corrupt geometric coefficients.
     from Gimntools.GimnRec.data_loaders import require_valid_detector_config
     require_valid_detector_config(detector_config, detector_config.get("data_from", ""))
+    detector_config = dict(detector_config,
+                           crystal_size=np.asarray(detector_config["crystal_size"], dtype=float))
     import uproot as up   # ROOT dependency only when reading actual ROOT files
     rotate_along, slice_axis = _resolve_axes(detector_config)
     first_rot = (rotate_along if first_rotation is None
@@ -86,6 +91,12 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
             astep = (360/detector_config['rotation_angles'])/detector_config['detNum']
         else:
             astep = 0.0
+        if geometry_out is not None:
+            from Gimntools.GimnRec.detector_response import acquisition_geometry
+            geometry_out.update(acquisition_geometry(
+                file_name, detector_config, detectors_angles, rsectors,
+                first_rot, -astep * c["runID"].astype(float),
+            ))
         prev=0; df={'distance':[],'angle':[],'slice':[]}; cum=0
         for e in range(ev_n):
             cID1=c['crystalID1'][e]; cID2=c['crystalID2'][e]
@@ -131,6 +142,15 @@ def coincidence_to_lor(file_name, detector_config, detectors_angles, parameters,
         # rotate_along was already resolved/normalized above (lowercase).
         f = up.open(file_name)
         co = f['tomographicCoincidences'].arrays(parameters, library='np')
+        if geometry_out is not None:
+            from Gimntools.GimnRec.detector_response import (
+                acquisition_geometry, check_petsys_lattice,
+            )
+            geometry_out.update(acquisition_geometry(
+                file_name, detector_config, detectors_angles, rsectors,
+                first_rot, -co["angleGantry_1"].astype(float),
+            ))
+            geometry_out.update(check_petsys_lattice(co, detector_config, rsectors))
         ev_n = co['SiPMPosX_1'].shape[0]
         print(f"PETSYS: {ev_n} events — {os.path.basename(file_name)}")
         df={'distance':[],'angle':[],'slice':[]}; prev_a=None
@@ -316,6 +336,10 @@ def save_reconstructions(res_dict, detector_config, n_dist_out=None, output_dir=
         sitk_img, sp = _build_sitk_image(
             img_array, detector_config, n_dist_out, fov_mm=fov_mm,
             voxel_mm=voxel_mm, slice_thickness_mm=slice_thickness_mm)
+        response = (res_dict.get("geometry") or {}).get("detector_response")
+        if key in ("mlem", "osem") and response is not None:
+            import json
+            sitk_img.SetMetaData("GimnToolsDetectorResponse", json.dumps(response))
         out_filename = os.path.join(output_dir, f"{base_name}_{key}.{fmt}")
         import SimpleITK as sitk
         sitk.WriteImage(sitk_img, out_filename)
