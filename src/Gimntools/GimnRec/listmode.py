@@ -164,7 +164,7 @@ def _ray_matrix(rays, shape_xyz, spacing, corner):
 def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
                          iterations=5, subsets=1, relaxation=0.8, ratio_cap=1e6,
                          sensitivity=None, normalization_lors=None, normalization_weights=None,
-                         cache_bytes=128 * 1024**2, progress=None, checkpoint=None):
+                         cache_bytes=128 * 1024**2, progress=None, checkpoint=None, update_callback=None):
     """Reconstruct a (z, y, x) volume with matched 3D Siddon operators.
 
     The likelihood integral is a voxel sensitivity map or the backprojection
@@ -260,6 +260,8 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
             exposure = (last - first) / len(rays)
             update = correction[support] / (sensitivity[support] * exposure)
             x[support] *= 1 + relaxation * (update - 1)
+            if update_callback is not None:
+                update_callback(it, sub + 1, x.reshape(shape))
         if checkpoint is not None:
             checkpoint(it, x.reshape(shape).copy())
         if progress is not None:

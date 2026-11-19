@@ -143,9 +143,24 @@ class Store:
             return default
 
     def set_setting(self, key, value):
+        self.set_settings({key: value})
+
+    def get_settings(self, prefix):
         with self._conn() as c:
-            c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
-                      (key, dumps(value)))
+            rows = c.execute("SELECT key, value FROM settings WHERE substr(key, 1, ?) = ?",
+                             (len(prefix), prefix)).fetchall()
+        values = {}
+        for row in rows:
+            try:
+                values[row["key"]] = json.loads(row["value"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return values
+
+    def set_settings(self, values):
+        with self._conn() as c:
+            c.executemany("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+                          ((key, dumps(value)) for key, value in values.items()))
 
     # ---------------- profiles ----------------
     def save_profile(self, name, *, pesquisador="", experimento="", fmt="petsys",

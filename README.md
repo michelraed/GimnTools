@@ -244,7 +244,10 @@ profiles and LUT generation. Both read and write the same SQLite database.
 Set `GIMNTOOLS_DB` to the path of an existing database to share it across
 different installations.
 In the VTK launcher, switch between **Light** and **Dark** in the header.
-The choice is saved per database for the next session.
+In either launcher, use **UI font** to choose an installed font or return
+to **Automatic**. The database remembers these preferences, the last tab,
+acquisition and reconstruction settings, and the last folder for each
+type of import or export.
 
 GUI tabs support GATE and PETSYS input, sinogram visualization, EM/FBP
 reconstruction, orthogonal display, profile analysis and FWHM analysis.
@@ -286,8 +289,9 @@ Without calibration the reconstruction assumes uniform sensitivity on
 illuminated voxels. The optional energy window applies to both hits.
 
 **Reconstruction → Convergence** runs selected EM checkpoints for a
-sinogram or the current list-mode NPZ. Select iterations and subsets,
-then compare percent contrast, background coefficient of variation and
+sinogram or the current list-mode NPZ. The matrix and voxel size can be
+set directly in this tab. Leave them blank to use the existing grid.
+Select iterations and subsets, then compare percent contrast, background coefficient of variation and
 contrast-to-noise ratio. The tool detects source positions in a short
 MLEM reference, keeps the same ROIs across comparisons, and clamps
 extreme ROI samples for the mean and deviation. The **Chart** controls
@@ -295,6 +299,13 @@ change axes, colours, typography and line style. Each acquisition's
 result can be saved as a CSV or a figure. The suggested checkpoint
 minimizes subset updates among settings within 95% of the best median
 normalized CNR on the first case tested.
+
+**Iterations & ROIs** shows the actual images after individual subsets
+and iterations when **Record iteration images** is enabled. It also
+displays the exact source and background masks over the MLEM reference
+used for the measurements. Choose a plane and slice and export a PNG,
+PDF or SVG. The reference and iteration images are temporary for the open
+session.
 
 The **Sinogram** COR estimator fits a radial constant and two sinusoidal
 terms for unknown object position. It reports how the constant changes

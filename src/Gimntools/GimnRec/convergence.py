@@ -1,5 +1,6 @@
 """Fixed physical regions for comparing contrast and noise across EM sweeps."""
 
+from contextlib import nullcontext
 import csv
 from dataclasses import dataclass
 
@@ -95,7 +96,7 @@ def _winsor_stats(pieces):
     return float(np.mean(samples)), float(np.std(samples, ddof=1)) if len(samples) > 1 else np.nan
 
 
-def convergence_series(run, regions, iterations, subsets, *, cor_mm, label):
+def convergence_series(run, regions, iterations, subsets, *, cor_mm, label, recording=None):
     """Measure selected checkpoints using one EM run per subset setting.
 
     run(iterations, subsets, checkpoint) calls checkpoint(z, iteration, XY)
@@ -117,7 +118,12 @@ def convergence_series(run, regions, iterations, subsets, *, cor_mm, label):
                     samples[iteration][index][0].append(values[signal])
                     samples[iteration][index][1].append(values[background])
 
-        run(iterations[-1], subset, collect)
+        context = recording(subset, iterations[-1]) if recording else nullcontext()
+        with context as write:
+            if write is None:
+                run(iterations[-1], subset, collect)
+            else:
+                run(iterations[-1], subset, collect, update_callback=write)
         for iteration in iterations:
             for source, (signal, background) in enumerate(samples[iteration], 1):
                 mean, _ = _winsor_stats(signal)

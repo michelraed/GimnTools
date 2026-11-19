@@ -83,8 +83,10 @@ def open_generator(panel):
     if selection is None:
         return
     settings, options = selection
-    path = filedialog.asksaveasfilename(parent=panel, title="Save analytical LUT",
-                                       defaultextension=".npz", filetypes=[("NPZ LUT", "*.npz")])
+    path = app.session.choose(
+        "lut.save", filedialog.asksaveasfilename, parent=panel, title="Save analytical LUT",
+        defaultextension=".npz", filetypes=[("NPZ LUT", "*.npz")],
+    )
     if not path:
         return
     try:

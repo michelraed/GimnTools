@@ -74,11 +74,16 @@ class _FakeApp:
 
 
 @pytest.fixture
-def panel(data):
+def panel(data, tmp_path):
+    from Gimntools.GimnRec.storage import Store
+    from Gimntools.GimnRec.ui.session import DesktopSession
+
     root = tk.Toplevel(_root)
     app = _FakeApp(*data)
+    app.session = root.session = DesktopSession(root, Store(tmp_path / "plots.db"))
     p = uiapp.PlotReconPanel(root, app)
     yield p
+    app.session.flush()
     root.destroy()
 
 
@@ -253,14 +258,14 @@ def test_coronal_falls_back_to_a_summed_sinogram(panel):
     assert "summed" in note
 
 
-def test_save_figure_writes_a_real_file(panel, tmp_path):
+def test_save_figure_writes_a_real_file(panel, tmp_path, monkeypatch):
     panel.avail.selection_set(0)
     panel._add_selected_as_columns()
     panel._add_row("sinogram")
     out = tmp_path / "fig.png"
     panel.v_fmt.set("png")
-    uiapp.filedialog.asksaveasfilename = lambda **k: str(out)
-    uiapp.messagebox.showinfo = lambda *a, **k: None
+    monkeypatch.setattr(uiapp.filedialog, "asksaveasfilename", lambda **k: str(out))
+    monkeypatch.setattr(uiapp.messagebox, "showinfo", lambda *a, **k: None)
     panel.save_figure()
     assert out.exists() and out.stat().st_size > 5000
 

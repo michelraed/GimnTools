@@ -112,6 +112,27 @@ def test_sensitivity_floor_keeps_zero_support_after_smoothing():
     np.testing.assert_array_equal(updates[-1][2], volume[0])
 
 
+def test_history_preserves_subset_volumes_written_by_slice():
+    from Gimntools.GimnRec.iteration_history import IterationHistory
+
+    history = IterationHistory()
+    try:
+        shape = (3, 4, 5)
+        with history.record("Saved COR", 2, 3, shape=shape, spacing=(1., 1., 2.)) as append:
+            for z in range(shape[0]):
+                for iteration in range(1, 4):
+                    for subset in range(1, 3):
+                        append(z, iteration, subset, np.full(shape[1:], 10 * iteration + 2 * subset + z))
+        series = history.runs["Saved COR", 2]
+        np.testing.assert_array_equal(series.read(2, 1)[:, 0, 0], [22, 23, 24])
+        np.testing.assert_array_equal(series.read(3, 2)[:, 0, 0], [34, 35, 36])
+        with pytest.raises(ValueError, match="outside"):
+            series.read(2, 3)
+    finally:
+        history.close()
+    assert not history.directory.exists()
+
+
 def test_reconstruction_workspace_listmode_and_convergence(tmp_path, monkeypatch):
     tk = pytest.importorskip("tkinter")
     from Gimntools.GimnRec.ui.app import ReconUI
@@ -144,12 +165,27 @@ def test_reconstruction_workspace_listmode_and_convergence(tmp_path, monkeypatch
         p = app.convergence_panel
         p.iterations.set("1, 2")
         p.subsets.set("1, 2")
+        p.matrix.set("23")
+        p.voxel.set("0.9")
         p.compare_cor.set(True)
         p._start()
         app._drain()
         assert not errors, errors
         assert p.history.get() == "Point"
         assert {row["case"] for row in p.results["Point"][0]} == {"Saved COR", "Estimated COR"}
+        history = app.iteration_panel.histories["Point"]
+        steps = history.runs["Saved COR", 2]
+        assert steps.shape == (5, 23, 23) and steps.spacing == (0.9, 0.9, 1.68)
+        assert not np.array_equal(steps.read(1, 1), steps.read(1, 2))
+        viewer = app.iteration_panel
+        viewer.mode.set("Source ROIs")
+        p._open_history()
+        assert app.recon_workspace.select() == str(viewer)
+        assert len(viewer.figure.axes[0].collections) == 2
+        roi_image = tmp_path / "roi.pdf"
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **_: str(roi_image))
+        viewer._save()
+        assert roi_image.read_bytes().startswith(b"%PDF")
         app.recon_panel.v["method"].set("mlem")
         app.recon_panel.v["iters"].set(1)
         app.recon_panel._recon_async()
@@ -171,5 +207,16 @@ def test_reconstruction_workspace_listmode_and_convergence(tmp_path, monkeypatch
         assert result["source"] == "coincidences" and result["volume"].shape == (9, 11, 11)
         assert result["origin"] == (-5., -5., -4.)
         assert app.recon_workspace.select() == str(app.recon_panel)
+
+        p.source.set(p.LISTMODE)
+        p.compare_cor.set(False)
+        p.matrix.set("13 11 9")
+        p.voxel.set("0.9 1.1 1.2")
+        p._start()
+        app._drain()
+        assert not errors, errors
+        steps = viewer.histories["coincidences"].runs["List mode", 2]
+        assert steps.read(2, 2).shape == (9, 11, 13)
+        assert steps.spacing == (0.9, 1.1, 1.2)
     finally:
         app.destroy()

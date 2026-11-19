@@ -23,6 +23,7 @@ Portable: only Tkinter (stdlib) + matplotlib. On Linux the system package
 compiles).
 """
 
+import json
 import os
 import re
 import sys
@@ -42,14 +43,13 @@ except ModuleNotFoundError:
 import numpy as np
 
 import tkinter as tk
-from tkinter import ttk, filedialog, font, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 try:
     _ALL_CMAPS = sorted(plt.colormaps())
@@ -61,8 +61,9 @@ from Gimntools.GimnRec.detector_response import (
     CRYSTAL_MATERIALS, CRYSTAL_MU_511, DEFAULT_FACE_WIDTH_MM,
     crystal_material, crystal_response_settings,
 )
-from Gimntools.GimnRec.storage import Store
+from Gimntools.GimnRec.storage import Store, dumps
 from Gimntools.GimnRec.ui.rendering import plot_canvas, show_image
+from Gimntools.GimnRec.ui.session import DesktopSession, SessionToolbar
 from Gimntools.GimnRec.filters import FBP_WINDOWS, PAD_MODES, resolve_pad_length
 
 
@@ -75,10 +76,7 @@ METHOD_OPTIONS = ["osem", "mlem", "fbp"]
 # ===========================================================================
 
 def _form_label(parent, label):
-    family = font.nametofont("TkDefaultFont", root=parent)
-    unit_width = max(1, family.measure("0"))
-    width = max(16, (family.measure(label) + unit_width - 1) // unit_width)
-    ttk.Label(parent, text=label, width=width).pack(side=tk.LEFT, padx=(0, 4))
+    ttk.Label(parent, text=label, width=-16).pack(side=tk.LEFT, padx=(0, 4))
 
 
 def labeled_combo(parent, label, var, values, width=20):
@@ -101,16 +99,19 @@ def labeled_spin(parent, label, var, lo, hi, is_double=False, width=10):
                 increment=(0.1 if is_double else 1)).pack(side=tk.LEFT)
 
 
-def file_picker(parent, label, var, kind="open", patterns=(("ROOT", "*.root"),)):
+def file_picker(parent, label, var, purpose, kind="open", patterns=(("ROOT", "*.root"),)):
     row = ttk.Frame(parent); row.pack(fill=tk.X, pady=1)
 
     def pick():
-        if kind == "open":
-            p = filedialog.askopenfilename(title=label, filetypes=list(patterns))
-        else:
-            p = filedialog.asksaveasfilename(title=label, filetypes=list(patterns))
-        if p:
-            var.set(p)
+        session = parent.winfo_toplevel().session
+        picker = filedialog.askopenfilename if kind == "open" else filedialog.asksaveasfilename
+        current = Path(var.get()).parent
+        path = session.choose(
+            purpose, picker, parent=parent, title=label,
+            initialdir=str(current) if current != Path(".") else "", filetypes=list(patterns),
+        )
+        if path:
+            var.set(path)
     ttk.Button(row, text=label, width=18, command=pick).pack(side=tk.LEFT)
     ttk.Label(row, textvariable=var, anchor="w", relief="sunken",
               width=30).pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -431,7 +432,7 @@ class DetectorConfigForm(ttk.LabelFrame):
         for index, (key, label, values) in enumerate(fields):
             column, row = divmod(index, height)
             self.vars[key] = tk.StringVar(value=_CFG_DEFAULTS.get(key, ""))
-            ttk.Label(form, text=label, width=22 if themed else 16).grid(
+            ttk.Label(form, text=label, width=-22 if themed else -16).grid(
                 row=row, column=column * 2, sticky="w", pady=1,
                 padx=(18 if themed and column else 0, 0))
             if values is None:
@@ -496,8 +497,10 @@ class DetectorConfigForm(ttk.LabelFrame):
 
     def _load(self):
         from Gimntools.GimnRec.data_loaders import load_detector_config
-        p = filedialog.askopenfilename(title="detector_config.json",
-                                       filetypes=[("JSON", "*.json")])
+        p = self.app.session.choose(
+            f"{self.fmt}.geometry.open", filedialog.askopenfilename, parent=self,
+            title="detector_config.json", filetypes=[("JSON", "*.json")],
+        )
         if not p:
             return
         try:
@@ -509,10 +512,11 @@ class DetectorConfigForm(ttk.LabelFrame):
 
     def _save(self):
         from Gimntools.GimnRec.data_loaders import save_detector_config
-        p = filedialog.asksaveasfilename(title="Exportar detector_config.json",
-                                         defaultextension=".json",
-                                         filetypes=[("JSON", "*.json")],
-                                         initialfile="detector_config.json")
+        p = self.app.session.choose(
+            f"{self.fmt}.geometry.save", filedialog.asksaveasfilename, parent=self,
+            title="Exportar detector_config.json", defaultextension=".json", filetypes=[("JSON", "*.json")],
+            initialfile="detector_config.json",
+        )
         if not p:
             return
         try:
@@ -527,8 +531,9 @@ class DetectorConfigForm(ttk.LabelFrame):
 # ===========================================================================
 
 class AngleRsectorPanel(ttk.LabelFrame):
-    def __init__(self, master, log_fn=None, default_n=12, **kw):
+    def __init__(self, master, fmt, log_fn=None, default_n=12, **kw):
         super().__init__(master, text="Angles / rsectors", padding=6, **kw)
+        self.fmt = fmt
         self._log = log_fn or (lambda m: None)
 
         top = ttk.Frame(self); top.pack(fill=tk.X)
@@ -560,8 +565,10 @@ class AngleRsectorPanel(ttk.LabelFrame):
 
     def _load_angles(self):
         from Gimntools.GimnRec.data_loaders import load_detectors_angles
-        p = filedialog.askopenfilename(title="detectors_angles.json",
-                                       filetypes=[("JSON", "*.json")])
+        p = self.winfo_toplevel().session.choose(
+            f"{self.fmt}.geometry.open", filedialog.askopenfilename, parent=self,
+            title="detectors_angles.json", filetypes=[("JSON", "*.json")],
+        )
         if not p:
             return
         try:
@@ -576,8 +583,10 @@ class AngleRsectorPanel(ttk.LabelFrame):
 
     def _load_rsectors(self):
         from Gimntools.GimnRec.data_loaders import load_rsectors
-        p = filedialog.askopenfilename(title="rsectors.json",
-                                       filetypes=[("JSON", "*.json")])
+        p = self.winfo_toplevel().session.choose(
+            f"{self.fmt}.geometry.open", filedialog.askopenfilename, parent=self, title="rsectors.json",
+            filetypes=[("JSON", "*.json")],
+        )
         if not p:
             return
         try:
@@ -592,10 +601,11 @@ class AngleRsectorPanel(ttk.LabelFrame):
 
     def _save_angles(self):
         import json
-        p = filedialog.asksaveasfilename(title="Exportar detectors_angles.json",
-                                         defaultextension=".json",
-                                         filetypes=[("JSON", "*.json")],
-                                         initialfile="detectors_angles.json")
+        p = self.winfo_toplevel().session.choose(
+            f"{self.fmt}.geometry.save", filedialog.asksaveasfilename, parent=self,
+            title="Exportar detectors_angles.json", defaultextension=".json", filetypes=[("JSON", "*.json")],
+            initialfile="detectors_angles.json",
+        )
         if not p:
             return
         try:
@@ -607,10 +617,11 @@ class AngleRsectorPanel(ttk.LabelFrame):
 
     def _save_rsectors(self):
         import json
-        p = filedialog.asksaveasfilename(title="Exportar rsectors.json",
-                                         defaultextension=".json",
-                                         filetypes=[("JSON", "*.json")],
-                                         initialfile="rsectors.json")
+        p = self.winfo_toplevel().session.choose(
+            f"{self.fmt}.geometry.save", filedialog.asksaveasfilename, parent=self,
+            title="Exportar rsectors.json", defaultextension=".json", filetypes=[("JSON", "*.json")],
+            initialfile="rsectors.json",
+        )
         if not p:
             return
         try:
@@ -684,8 +695,10 @@ def _build_root_batch(panel, paths, spec):
 
 
 def _pick_root_batch(panel):
-    paths = filedialog.askopenfilenames(parent=panel, title="Select acquisition ROOTs",
-                                       filetypes=[("ROOT", "*.root")])
+    paths = panel.app.session.choose(
+        f"{panel.cfg_form.fmt}.root.open", filedialog.askopenfilenames, parent=panel,
+        title="Select acquisition ROOTs", filetypes=[("ROOT", "*.root")],
+    )
     if paths:
         panel._build_async(paths=paths)
 
@@ -738,7 +751,7 @@ class GatePanel(ttk.Frame):
         box_files = ttk.LabelFrame(content, text="GATE data", padding=6)
         box_files.pack(fill=tk.X, pady=3)
         self.var_root = tk.StringVar()
-        file_picker(box_files, "ROOT GATE", self.var_root)
+        file_picker(box_files, "ROOT GATE", self.var_root, "gate.root.open")
         self.var_interp = tk.BooleanVar(value=False)
         self.var_gnorm = tk.BooleanVar(value=False)
         self.var_ndist = tk.IntVar(value=128)
@@ -750,7 +763,7 @@ class GatePanel(ttk.Frame):
         labeled_spin(box_files, "n_dist_out", self.var_ndist, 16, 1024)
         labeled_spin(box_files, "angular_sigma", self.var_asigma, 0.0, 10.0, is_double=True)
 
-        self.angles = AngleRsectorPanel(content, log_fn=app.log, default_n=12)
+        self.angles = AngleRsectorPanel(content, "gate", log_fn=app.log, default_n=12)
         self.angles.pack(fill=tk.BOTH, expand=True, pady=3)
 
         rown = ttk.Frame(content); rown.pack(fill=tk.X)
@@ -839,10 +852,11 @@ class PetsysPanel(ttk.Frame):
         self.cfg_form = DetectorConfigForm(content, app, "petsys")
         self.cfg_form.pack(fill=tk.X, pady=3)
 
-        self.angles = AngleRsectorPanel(content, log_fn=app.log, default_n=12)
+        self.angles = AngleRsectorPanel(content, "petsys", log_fn=app.log, default_n=12)
         self.angles.pack(fill=tk.X, pady=3)
 
-        sub = ttk.Notebook(content); sub.pack(fill=tk.BOTH, expand=True, pady=3)
+        sub = self.notebook = ttk.Notebook(content)
+        sub.pack(fill=tk.BOTH, expand=True, pady=3)
         self.tab_data = ttk.Frame(sub, padding=4)
         self.tab_cal = ttk.Frame(sub, padding=4)
         sub.add(self.tab_data, text="Data / Sinogram")
@@ -854,9 +868,9 @@ class PetsysPanel(ttk.Frame):
     def _build_data_tab(self):
         t = self.tab_data
         self.var_meas = tk.StringVar(); self.var_bg = tk.StringVar(); self.var_cal = tk.StringVar()
-        file_picker(t, "measurement ROOT", self.var_meas)
-        file_picker(t, "ROOT background", self.var_bg)
-        file_picker(t, "calibration (opt.)", self.var_cal, patterns=(("JSON", "*.json"),))
+        file_picker(t, "measurement ROOT", self.var_meas, "petsys.root.open")
+        file_picker(t, "ROOT background", self.var_bg, "petsys.background.open")
+        file_picker(t, "calibration (opt.)", self.var_cal, "calibration.open", patterns=(("JSON", "*.json"),))
         self.var_apply_corr = tk.BooleanVar(value=False)
         ttk.Checkbutton(t, text="Apply corrections (COR + encoder offset)",
                         variable=self.var_apply_corr).pack(anchor="w", pady=2)
@@ -983,7 +997,7 @@ class PetsysPanel(ttk.Frame):
                   "'7.5,0' off-centre | '7.5,0;-7.5,0' two sources).",
                   wraplength=440, style="Hint.TLabel").pack(anchor="w", pady=2)
         self.cal_bg = tk.StringVar()
-        file_picker(t, "ROOT background", self.cal_bg)
+        file_picker(t, "ROOT background", self.cal_bg, "petsys.background.open")
 
         cols = ("label", "root", "sources", "I")
         self.cal_tree = ttk.Treeview(t, columns=cols, show="headings", height=5)
@@ -1003,7 +1017,7 @@ class PetsysPanel(ttk.Frame):
 
         bo = ttk.Frame(t); bo.pack(fill=tk.X, pady=4)
         self.cal_out = tk.StringVar(value="calibration.json")
-        file_picker(bo, "Save to", self.cal_out, kind="save", patterns=(("JSON", "*.json"),))
+        file_picker(bo, "Save to", self.cal_out, "calibration.save", kind="save", patterns=(("JSON", "*.json"),))
         ttk.Button(t, text="Generate calibration (joint fit)",
                    command=self._run_cal_async).pack(fill=tk.X, pady=3)
 
@@ -1015,7 +1029,10 @@ class PetsysPanel(ttk.Frame):
         if not sel:
             messagebox.showinfo("Select", "Select a row first.")
             return
-        p = filedialog.askopenfilename(title="Acquisition ROOT", filetypes=[("ROOT", "*.root")])
+        p = self.app.session.choose(
+            "petsys.calibration.root.open", filedialog.askopenfilename, parent=self, title="Acquisition ROOT",
+            filetypes=[("ROOT", "*.root")],
+        )
         if p:
             self.cal_tree.set(sel[0], "root", p)
 
@@ -1110,7 +1127,7 @@ class SinogramPanel(ttk.Frame):
         self.ax = self.fig.add_subplot(111)
         self.canvas = plot_canvas(self.app, self.fig, self)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        NavigationToolbar2Tk(self.canvas, self)
+        SessionToolbar(self.canvas, self)
         bind_wheel_slices(self.canvas, self._on_scroll)
         self.canvas.mpl_connect("button_press_event", self._on_click)
         self.canvas.mpl_connect("motion_notify_event", self._on_motion)
@@ -1165,8 +1182,10 @@ class SinogramPanel(ttk.Frame):
 
     # ---- COR helpers ---------------------------------------------------
     def _load_files(self):
-        paths = filedialog.askopenfilenames(parent=self, title="Load sinograms",
-                                           filetypes=[("GimnTools sinograms", "*.npz")])
+        paths = self.app.session.choose(
+            "sinogram.open", filedialog.askopenfilenames, parent=self, title="Load sinograms",
+            filetypes=[("GimnTools sinograms", "*.npz")],
+        )
         if not paths:
             return
 
@@ -1197,14 +1216,18 @@ class SinogramPanel(ttk.Frame):
             return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", entry["name"]).strip(" .") or "sinogram"
 
         if len(entries) == 1:
-            path = filedialog.asksaveasfilename(parent=self, defaultextension=".npz",
-                                               initialfile=f"{filename(entries[0])}.npz",
-                                               filetypes=[("GimnTools sinogram", "*.npz")])
+            path = self.app.session.choose(
+                "sinogram.save", filedialog.asksaveasfilename, parent=self, defaultextension=".npz",
+                initialfile=f"{filename(entries[0])}.npz", filetypes=[("GimnTools sinogram", "*.npz")],
+            )
             if not path:
                 return
             paths = [Path(path)]
         else:
-            directory = filedialog.askdirectory(parent=self, title="Choose the sinogram destination")
+            directory = self.app.session.choose(
+                "sinogram.save", filedialog.askdirectory, directory=True, parent=self,
+                title="Choose the sinogram destination",
+            )
             if not directory:
                 return
             folder = Path(directory)
@@ -1479,7 +1502,7 @@ class ReconstructionPanel(ttk.Frame):
         labeled_entry(doi, "Face order (auto)", self.v["doi_face_order"])
         labeled_entry(doi, "Depth quadrature", self.v["doi_depth_order"])
         sv = ttk.Frame(response_box)
-        file_picker(sv, "SV-PSF LUT", self.v["sv_lut"], patterns=(("NPZ", "*.npz"),))
+        file_picker(sv, "SV-PSF LUT", self.v["sv_lut"], "lut.open", patterns=(("NPZ", "*.npz"),))
         ttk.Label(sv, text="Exploratory until independently calibrated.",
                   wraplength=240).pack(anchor="w")
 
@@ -1615,7 +1638,7 @@ class ReconstructionPanel(ttk.Frame):
         self.ax_sa = self.fig.add_subplot(133)
         self.canvas = plot_canvas(self.app, self.fig, view)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        NavigationToolbar2Tk(self.canvas, view)
+        SessionToolbar(self.canvas, view)
         bind_wheel_slices(self.canvas, self._on_scroll)
         self.ctrl = ImageControls(view, self.draw, default_cmap="gray", default_mode="volume")
         self.ctrl.pack(fill=tk.X, pady=2)
@@ -1772,8 +1795,10 @@ class ReconstructionPanel(ttk.Frame):
         self.app.start_worker("reconstruct batch", run)
 
     def _add_mhd(self):
-        path = filedialog.askopenfilename(
-            filetypes=[("MHD/NRRD", "*.mhd *.nrrd"), ("All files", "*.*")])
+        path = self.app.session.choose(
+            "volume.open", filedialog.askopenfilename, parent=self,
+            filetypes=[("MHD/NRRD", "*.mhd *.nrrd"), ("All files", "*.*")],
+        )
         if not path:
             return
         try:
@@ -1889,9 +1914,10 @@ class ReconstructionPanel(ttk.Frame):
             return
         fmt = self.var_fmt.get()
         base = self.current_recon["name"] if self.current_recon else self.app.last_source
-        path = filedialog.asksaveasfilename(
-            defaultextension=f".{fmt}", filetypes=[(fmt.upper(), f"*.{fmt}")],
-            initialfile=f"{base}.{fmt}")
+        path = self.app.session.choose(
+            "volume.save", filedialog.asksaveasfilename, parent=self, defaultextension=f".{fmt}",
+            filetypes=[(fmt.upper(), f"*.{fmt}")], initialfile=f"{base}.{fmt}",
+        )
         if not path:
             return
         try:
@@ -2155,8 +2181,10 @@ class NemaPanel(ttk.Frame):
                                  values=(im["name"], "×".join(str(d) for d in im["array"].shape)))
 
     def _add_mhd(self):
-        paths = filedialog.askopenfilenames(
-            filetypes=[("MHD/NRRD", "*.mhd *.nrrd"), ("All files", "*.*")])
+        paths = self.app.session.choose(
+            "volume.open", filedialog.askopenfilenames, parent=self,
+            filetypes=[("MHD/NRRD", "*.mhd *.nrrd"), ("All files", "*.*")],
+        )
         if not paths:
             return
         import SimpleITK as sitk
@@ -2485,8 +2513,10 @@ class NemaPanel(ttk.Frame):
         if not self.images:
             messagebox.showinfo("No images", "Load images first.")
             return
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
-                                            filetypes=[("Excel", "*.xlsx")])
+        path = self.app.session.choose(
+            "nema.save", filedialog.asksaveasfilename, parent=self, defaultextension=".xlsx",
+            filetypes=[("Excel", "*.xlsx")],
+        )
         if not path:
             return
         try:
@@ -2505,8 +2535,10 @@ class NemaPanel(ttk.Frame):
         im = self.cur_image()
         if im is None or not im["rois"]:
             return
-        path = filedialog.asksaveasfilename(defaultextension=".csv",
-                                            filetypes=[("CSV", "*.csv")])
+        path = self.app.session.choose(
+            "nema.save", filedialog.asksaveasfilename, parent=self, defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+        )
         if path:
             self._rois_dataframe(im).to_csv(path, index=False)
             messagebox.showinfo("Saved", "CSV exported.")
@@ -2686,7 +2718,7 @@ class PlotReconPanel(ttk.Frame):
         self.fig = Figure(figsize=(8, 6), dpi=100)
         self.canvas = plot_canvas(self.app, self.fig, right)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        NavigationToolbar2Tk(self.canvas, right).update()
+        SessionToolbar(self.canvas, right).update()
         ttk.Label(right, style="Hint.TLabel",
                   text="(preview is rendered at screen DPI; the exported file "
                        "uses the DPI above)").pack(anchor="w")
@@ -3316,8 +3348,10 @@ class PlotReconPanel(ttk.Frame):
                                 "Add at least one row and one column.")
             return
         fmt = self.v_fmt.get()
-        path = filedialog.asksaveasfilename(defaultextension=f".{fmt}",
-                                            filetypes=[(fmt.upper(), f"*.{fmt}")])
+        path = self.app.session.choose(
+            "figure.save", filedialog.asksaveasfilename, parent=self, defaultextension=f".{fmt}",
+            filetypes=[(fmt.upper(), f"*.{fmt}")],
+        )
         if not path:
             return
         try:
@@ -3375,23 +3409,23 @@ class ReconUI(tk.Tk):
         self._active_task = None
         self._study_generation = 0
 
-        # local database (SQLite, cross-platform)
+        from Gimntools.GimnRec.ui.appearance import DesktopAppearance, DesktopTypography
+
         self.store = Store()
+        self.session = DesktopSession(self, self.store)
+        self.typography = DesktopTypography(self, self.session)
         self.appearance = None
         if themed:
-            from Gimntools.GimnRec.ui.appearance import DesktopAppearance
-
-            self.appearance = DesktopAppearance(self, self.store)
+            self.appearance = DesktopAppearance(self, self.store, self.typography)
             self.minsize(940, 660)
         else:
-            from Gimntools.GimnRec.ui.appearance import configure_typography
-
-            configure_typography(self)
             style = ttk.Style(self)
-            style.configure(".", font="TkDefaultFont")
             style.configure("TNotebook.Tab", padding=(10, 5))
             style.configure("Hint.TLabel", foreground="#666")
             style.configure("Emphasis.TLabel", foreground="#036")
+            bar = ttk.Frame(self, padding=(8, 5))
+            bar.pack(fill=tk.X)
+            self.typography.picker(bar).pack(side=tk.RIGHT)
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=12 if themed else 0)
@@ -3399,14 +3433,17 @@ class ReconUI(tk.Tk):
         self.petsys = PetsysPanel(self.notebook, self)
         self.sino_panel = SinogramPanel(self.notebook, self)
         from Gimntools.GimnRec.ui.em_panels import ConvergencePanel, ListmodePanel
+        from Gimntools.GimnRec.ui.iteration_panel import IterationPanel
 
         self.recon_workspace = ttk.Notebook(self.notebook)
         self.recon_panel = ReconstructionPanel(self.recon_workspace, self)
-        self.convergence_panel = ConvergencePanel(self.recon_workspace, self)
+        self.convergence_panel = ConvergencePanel(self.recon_workspace, self, ScrollableColumn)
+        self.iteration_panel = IterationPanel(self.recon_workspace, self)
         self.listmode_panel = ListmodePanel(self.recon_workspace, self)
         self.recon_workspace.add(self.recon_panel, text="Sinogram reconstruction")
         self.recon_workspace.add(self.listmode_panel, text="List mode")
         self.recon_workspace.add(self.convergence_panel, text="Convergence")
+        self.recon_workspace.add(self.iteration_panel, text="Iterations & ROIs")
         self.profiles_panel = ProfilesPanel(self.notebook, self)
         self.plot_panel = PlotReconPanel(self.notebook, self)
         self.nema_panel = NemaPanel(self.notebook, self)
@@ -3431,21 +3468,11 @@ class ReconUI(tk.Tk):
         if self.appearance:
             self.appearance.apply()
 
-        # Files remembered between runs (data pickers)
-        self._file_vars = {
-            "gate_root": self.gate.var_root,
-            "petsys_meas": self.petsys.var_meas,
-            "petsys_bg": self.petsys.var_bg,
-            "petsys_cal": self.petsys.var_cal,
-            "cal_bg": self.petsys.cal_bg,
-            "cal_out": self.petsys.cal_out,
-        }
+        self._profile_revisions = {"gate": None, "petsys": None}
         self._restore_acquisition_profiles()
-        self._restore_last_files()
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
+        self._restore_session()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
         self._drain_job = self.after(120, self._drain)
-        self._session_notice_job = self.after(400, self._notify_last_session)
 
     def refresh_acquisition_profiles(self, profiles=None):
         if profiles is None:
@@ -3467,6 +3494,7 @@ class ReconUI(tk.Tk):
             tab.var_apply_corr.set(bool(tab.calibration))
             tab.var_cal.set("")
         tab.profile.selected.set(name)
+        self._profile_revisions[fmt] = [name, profile.get("updated_at")]
         if remember:
             self.store.set_setting(f"last_profile_{fmt}", name)
         self.log(f"[profile] '{name}' loaded into the {fmt.upper()} tab.")
@@ -3483,39 +3511,83 @@ class ReconUI(tk.Tk):
                 except (TypeError, ValueError) as exc:
                     self.log(f"[profile] {name!r} could not be loaded: {exc}")
 
-    # ---- file memory across sessions ----
-    def _restore_last_files(self):
-        data = self.store.get_setting("last_files", {}) or {}
-        self._had_last_files = False
-        for k, var in self._file_vars.items():
-            val = data.get(k, "")
-            if val:
-                var.set(val); self._had_last_files = True
+    def _restore_session(self):
+        paths = {
+            "gate_root": self.gate.var_root,
+            "petsys_meas": self.petsys.var_meas, "petsys_bg": self.petsys.var_bg,
+            "petsys_cal": self.petsys.var_cal, "cal_bg": self.petsys.cal_bg,
+            "cal_out": self.petsys.cal_out,
+        }
+        legacy = self.store.get_setting("last_files", {})
+        self.session.watch("files", paths, defaults=legacy if isinstance(legacy, dict) else None)
+
+        panels = {
+            "gate": (self.gate, "var_interp var_gnorm var_ndist var_asigma var_name"),
+            "petsys": (self.petsys, "var_apply_corr var_gnorm var_bg_scale var_ndist var_asigma var_sino_threads var_name"),
+            "sinogram": (self.sino_panel, "var_click"),
+            "volume": (self.recon_panel, "var_recon_name var_fmt"),
+            "listmode": (self.listmode_panel, "path matrix voxel center energy_enabled energy iterations subsets relaxation ratio_cap"),
+            "convergence": (self.convergence_panel, "iterations subsets radius source_count threshold search_radius "
+                            "matrix voxel record_steps compare_cor x_axis metric title font legend style palette dpi"),
+            "iteration_viewer": (self.iteration_panel, "plane fixed_scale"),
+            "dicom": (self.dicom_panel, "study equipment"),
+            "profiles": (self.profiles_panel, "var_name var_pesq var_exp var_fmt"),
+            "nema": (self.nema_panel, "plane roi_shape side radius"),
+            "plot": (self.plot_panel, "v_aspect v_row_title_pos v_fs_title v_fs_row v_fs_label v_fs_tick v_fs_cbar "
+                     "v_colw v_dpi v_suptitle v_letters v_letter_color v_cbars v_family v_axes_off v_col_titles_top v_fmt"),
+        }
+        for group, (panel, names) in panels.items():
+            self.session.watch(group, {name: getattr(panel, name) for name in names.split()})
+        self.session.watch("reconstruction", {key: var for key, var in self.recon_panel.v.items() if key != "cor_mm"})
+        for key, panel in (("sinogram", self.sino_panel), ("volume", self.recon_panel), ("nema", self.nema_panel)):
+            self.session.watch(f"{key}.display", {"cmap": panel.ctrl.cmap, "scale": panel.ctrl.mode})
+
+        self._acquisition_drafts = {}
+        for fmt in ("gate", "petsys"):
+            tab = getattr(self, fmt)
+            draft = self.session.get(f"draft.{fmt}")
+            if isinstance(draft, dict) and draft.get("profile_revision") == self._profile_revisions[fmt]:
+                try:
+                    tab.cfg_form._populate(draft["config"])
+                    tab.angles.set_data(draft["angles"], draft["rsectors"])
+                    if fmt == "petsys":
+                        tab.calibration = draft.get("calibration")
+                except (KeyError, TypeError, ValueError) as exc:
+                    self.log(f"[{fmt.upper()}] Could not restore the last detector settings: {exc}")
+            self._acquisition_drafts[fmt] = self._acquisition_snapshot(fmt)
+        self.session.watch_notebook("ui.tab", self.notebook)
+        self.session.watch_notebook("ui.reconstruction_tab", self.recon_workspace)
+        self.session.watch_notebook("ui.petsys_tab", self.petsys.notebook)
+
+    def _acquisition_snapshot(self, fmt):
+        tab = getattr(self, fmt)
+        try:
+            draft = {
+                "profile_revision": self._profile_revisions[fmt],
+                "config": tab.cfg_form.get_config(), "angles": tab.angles.get_angles(),
+                "rsectors": tab.angles.get_rsectors(),
+            }
+            if fmt == "petsys":
+                draft["calibration"] = tab.calibration
+        except (ValueError, tk.TclError):
+            return None
+        return json.loads(dumps(draft))
 
     def _save_files(self):
-        try:
-            self.store.set_setting(
-                "last_files", {k: v.get() for k, v in self._file_vars.items()})
-        except Exception:
-            pass
-
-    def _notify_last_session(self):
-        self._session_notice_job = None
-        if getattr(self, "_had_last_files", False):
-            messagebox.showinfo(
-                "Previous session",
-                "The pre-filled files are those from the LAST RUN "
-                "(defaults from the previous session). Confirm or change them before "
-                "building the sinogram.")
-
-    def _on_close(self):
-        self._save_files()
-        self.destroy()
+        for fmt, previous in self._acquisition_drafts.items():
+            draft = self._acquisition_snapshot(fmt)
+            if draft is not None and draft != previous:
+                self.session.remember(f"draft.{fmt}", draft)
+                self._acquisition_drafts[fmt] = draft
+        self.session.flush()
 
     def destroy(self):
-        for job in (self._drain_job, self._session_notice_job):
-            if job is not None:
-                self.after_cancel(job)
+        if hasattr(self, "_acquisition_drafts"):
+            self._save_files()
+        if getattr(self, "_drain_job", None) is not None:
+            self.after_cancel(self._drain_job)
+        if hasattr(self, "iteration_panel"):
+            self.iteration_panel.close_histories()
         super().destroy()
 
     # ---- thread-safe communication ----
@@ -3860,16 +3932,23 @@ class ReconUI(tk.Tk):
                     sensitivity_floor=sensitivity_floor,
                 )
 
-                def run(iterations, subsets, checkpoint=None):
+                def run(iterations, subsets, checkpoint=None, *, update_callback=None):
                     if subsets > 1:
                         return r.osem(angles, iterations=iterations, subsets_n=subsets,
-                                      checkpoint=checkpoint, **em_options)
-                    return r.mlem(angles, iterations=iterations, checkpoint=checkpoint, **em_options)
+                                      checkpoint=checkpoint, update_callback=update_callback, **em_options)
+                    return r.mlem(angles, iterations=iterations, checkpoint=checkpoint,
+                                  update_callback=update_callback, **em_options)
 
                 if sweep is not None:
+                    from functools import partial
                     from Gimntools.GimnRec.convergence import convergence_series, detect_source_regions
 
+                    if max(sweep["subsets"]) > r.n_ang:
+                        raise ValueError(f"The sweep can use at most {r.n_ang} subsets for this sinogram")
                     iterations = sweep["iterations"]
+                    shape = (r.n_slices, r.n_img, r.n_img)
+                    spacing = (r.voxel_mm, r.voxel_mm, self._axial_spacing(entry, r.voxel_mm))
+                    history = sweep.get("history")
                     regions = sweep.get("regions")
                     if regions is None:
                         reference = run(min(4, max(iterations)), 1)
@@ -3878,12 +3957,17 @@ class ReconUI(tk.Tk):
                             sensitivity = np.asarray(response.doi.sum(axis=0)).reshape(reference.shape[1:])
                             support = sensitivity > sensitivity.max() * sensitivity_floor
                         regions = detect_source_regions(
-                            reference, (r.voxel_mm, r.voxel_mm, self._axial_spacing(entry, r.voxel_mm)),
+                            reference, spacing,
                             radius_mm=sweep["radius_mm"], source_count=sweep["source_count"],
                             relative_threshold=sweep["threshold"],
                             search_radius_mm=sweep.get("search_radius_mm") or srange / 2, support=support)
+                        if history is not None:
+                            history.set_reference(reference, spacing, regions)
+                    recording = None
+                    if history is not None and sweep.get("record_steps"):
+                        recording = partial(history.record, sweep["case"], shape=shape, spacing=spacing)
                     rows = convergence_series(run, regions, iterations, sweep["subsets"],
-                                              cor_mm=r.cor_mm, label=sweep["case"])
+                                              cor_mm=r.cor_mm, label=sweep["case"], recording=recording)
                     return rows, regions
                 num_iterations = int(params["iters"].get())
                 if method == "osem":

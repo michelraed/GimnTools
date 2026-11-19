@@ -64,7 +64,10 @@ class DicomPanel(ttk.Frame):
         if not study or not equipment:
             messagebox.showwarning("DICOM export", "Enter the study and equipment names.", parent=self)
             return
-        directory = filedialog.askdirectory(parent=self, title="Choose the DICOM destination")
+        directory = self.app.session.choose(
+            "dicom.save", filedialog.askdirectory, directory=True, parent=self,
+            title="Choose the DICOM destination",
+        )
         if not directory:
             return
 

@@ -1,4 +1,4 @@
-"""Light and dark presentation for the VTK desktop launcher."""
+"""Desktop typography and light/dark presentation for the VTK launcher."""
 
 import sqlite3
 import tkinter as tk
@@ -35,35 +35,70 @@ class _ThemedCanvas(FigureCanvasTkAgg):
         super().draw()
 
 
-def configure_typography(root):
-    """Prefer a readable proportional UI font on each desktop."""
-    installed = {name.casefold(): name for name in font.families(root=root)}
-    family = font.nametofont("TkDefaultFont", root=root).actual("family")
-    families = ("Inter", "Segoe UI", "Helvetica Neue", "Noto Sans", "Ubuntu",
-                "DejaVu Sans", "Liberation Sans", "URW Gothic L", "Helvetica", "Arial")
-    for candidate in families:
-        selected = installed.get(candidate.casefold())
-        if selected:
-            trial = font.Font(root=root, family=selected, size=11)
-            if trial.measure("iii") < trial.measure("mmm"):
-                family = trial.actual("family")
-                break
-    for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkCaptionFont"):
-        font.nametofont(name, root=root).configure(family=family, size=11)
-    font.nametofont("TkHeadingFont", root=root).configure(family=family, size=11, weight="bold")
-    return family
+class DesktopTypography:
+    """Select an installed family and update the named fonts in place."""
+
+    AUTO = "Automatic"
+
+    def __init__(self, root, session):
+        self.root = root
+        self.session = session
+        self.installed = {name.casefold(): name for name in font.families(root=root)
+                          if not name.startswith("@")}
+        self.default_family = self._default_family()
+        self.heading = font.Font(root=root, size=18, weight="bold")
+        saved = session.get("ui.font")
+        family = self.installed.get(saved.casefold()) if isinstance(saved, str) else None
+        self.selection = tk.StringVar(root, value=family or self.AUTO)
+        self.apply()
+
+    def _default_family(self):
+        candidates = ("Inter", "Segoe UI", "Helvetica Neue", "Noto Sans", "Ubuntu",
+                      "DejaVu Sans", "Liberation Sans", "URW Gothic L", "Helvetica", "Arial")
+        for candidate in candidates:
+            family = self.installed.get(candidate.casefold())
+            if family:
+                trial = font.Font(root=self.root, family=family, size=11)
+                if trial.measure("iii") < trial.measure("mmm"):
+                    return trial.actual("family")
+        return font.nametofont("TkDefaultFont", root=self.root).actual("family")
+
+    def picker(self, parent, *, label_style="TLabel"):
+        row = ttk.Frame(parent, style=parent.cget("style") or "TFrame")
+        ttk.Label(row, text="UI font", style=label_style).pack(side=tk.LEFT, padx=(0, 6))
+        combo = ttk.Combobox(row, textvariable=self.selection, state="readonly", width=22,
+                             values=(self.AUTO, *sorted(self.installed.values(), key=str.casefold)))
+        combo.pack(side=tk.LEFT)
+        combo.bind("<<ComboboxSelected>>", self._choose)
+        return row
+
+    def _choose(self, _event):
+        self.apply()
+        self.session.remember("ui.font", self.selection.get())
+
+    def apply(self):
+        family = self.installed.get(self.selection.get().casefold(), self.default_family)
+        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkCaptionFont"):
+            font.nametofont(name, root=self.root).configure(family=family, size=11)
+        font.nametofont("TkHeadingFont", root=self.root).configure(family=family, size=11, weight="bold")
+        self.heading.configure(family=family)
+        style = ttk.Style(self.root)
+        style.configure(".", font="TkDefaultFont")
+        style.configure("TCombobox", font="TkDefaultFont")
+        linespace = font.nametofont("TkDefaultFont", root=self.root).metrics("linespace")
+        style.configure("Treeview", rowheight=linespace + 9)
 
 
 class DesktopAppearance:
-    def __init__(self, root, store):
+    def __init__(self, root, store, typography):
         self.root = root
         self.store = store
         self.canvases = WeakSet()
         self.style = ttk.Style(root)
         self.style.theme_create("gimntools", parent="clam")
         self.style.theme_use("gimntools")
-        family = configure_typography(root)
-        self.heading = font.Font(root=root, family=family, size=18, weight="bold")
+        self.typography = typography
+        self.typography.apply()
         self.strong = font.nametofont("TkHeadingFont", root=root)
         saved = store.get_setting("vtk_desktop_theme", "dark")
         self.mode = tk.StringVar(root, value=saved if saved in ("light", "dark") else "dark")
@@ -78,6 +113,7 @@ class DesktopAppearance:
             side=tk.LEFT, padx=(14, 0))
         controls = ttk.Frame(header, style="Header.TFrame")
         controls.pack(side=tk.RIGHT)
+        self.typography.picker(controls, label_style="Header.TLabel").pack(side=tk.LEFT, padx=(0, 14))
         ttk.Label(controls, text="Theme", style="Header.TLabel").pack(side=tk.LEFT, padx=(0, 8))
         for mode, label in (("light", "Light"), ("dark", "Dark")):
             ttk.Radiobutton(controls, text=label, value=mode, variable=self.mode,
@@ -100,7 +136,7 @@ class DesktopAppearance:
                     selectforeground=p["text"], focuscolor=p["accent"], font="TkDefaultFont")
         s.configure("Header.TFrame", background=p["surface"])
         s.configure("Header.TLabel", background=p["surface"], foreground=p["muted"])
-        s.configure("Brand.TLabel", background=p["surface"], foreground=p["text"], font=self.heading)
+        s.configure("Brand.TLabel", background=p["surface"], foreground=p["text"], font=self.typography.heading)
         s.configure("Hint.TLabel", foreground=p["muted"])
         s.configure("Emphasis.TLabel", foreground=p["accent"], font=self.strong)
 
@@ -131,8 +167,7 @@ class DesktopAppearance:
                   foreground=[("disabled", p["muted"])], bordercolor=[("focus", p["accent"])])
         for name in ("TCheckbutton", "TRadiobutton"):
             s.map(name, indicatorbackground=[("selected", p["accent"]), ("!selected", p["surface"])])
-        s.configure("Treeview", background=p["surface"], fieldbackground=p["surface"],
-                    rowheight=font.nametofont("TkDefaultFont", root=self.root).metrics("linespace") + 9)
+        s.configure("Treeview", background=p["surface"], fieldbackground=p["surface"])
         s.configure("Treeview.Heading", background=p["raised"], font=self.strong)
         s.map("Treeview", background=[("selected", p["selection"])],
               foreground=[("selected", p["text"])])

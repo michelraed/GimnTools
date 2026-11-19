@@ -664,7 +664,8 @@ class siddon_reconstructor:
              norm_sino=None,
              regularization_every=None, regularization_sigma=None,
              verbose=True, ratio_cap=1e6, relaxation=1.0, legacy=False,
-             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None, checkpoint=None, sensitivity_floor=0.0):
+             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None, checkpoint=None, sensitivity_floor=0.0,
+             update_callback=None):
         """
         MLEM with Siddon + radial detector response + (flood) normalization.
 
@@ -699,6 +700,9 @@ class siddon_reconstructor:
 
         checkpoint: optional callback taking (slice_index, iteration, image).
                    It is called after a complete iteration on the slice.
+
+        update_callback: optional callback (slice_index, iteration, subset, image).
+                   The last subset includes inter-iteration regularization.
 
         ratio_cap: upper limit applied to the ratio y/y_est by CLIPPING
                    (not resetting). Prevents numerical blow-ups without
@@ -767,6 +771,8 @@ class siddon_reconstructor:
                     x = gaussian_filter(x, sigma=reg_sigma, mode='nearest')
                     if support is not None:
                         x[~support] = 0
+                if update_callback is not None:
+                    update_callback(z, it + 1, 1, x)
                 if checkpoint is not None:
                     checkpoint(z, it + 1, x)
             rec[z] = x
@@ -781,7 +787,8 @@ class siddon_reconstructor:
              regularization_every=None, regularization_sigma=None,
              verbose=True, ratio_cap=1e6, relaxation=1.0,
              subset_order="interleaved", warn_subsets=True, legacy=False,
-             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None, checkpoint=None, sensitivity_floor=0.0):
+             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None, checkpoint=None, sensitivity_floor=0.0,
+             update_callback=None):
         """
         OSEM with Siddon + radial detector response + (flood) normalization.
 
@@ -892,12 +899,16 @@ class siddon_reconstructor:
                         update = 1.0 + relaxation * (update - 1.0)
                     x *= update
                     x = np.clip(x, 0, None)
+                    if update_callback is not None and i + 1 < len(subset_idx):
+                        update_callback(z, it + 1, i + 1, x)
 
                 # --- inter-iteration REGULARIZATION (not the system model) ---
                 if reg_every > 0 and (it+1) % reg_every == 0:
                     x = gaussian_filter(x, sigma=reg_sigma, mode='nearest')
                     if support is not None:
                         x[~support] = 0
+                if update_callback is not None:
+                    update_callback(z, it + 1, len(subset_idx), x)
                 if checkpoint is not None:
                     checkpoint(z, it + 1, x)
             rec[z] = x

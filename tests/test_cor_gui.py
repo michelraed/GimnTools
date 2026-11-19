@@ -46,9 +46,6 @@ from Gimntools.GimnRec.ui.app import ReconUI  # noqa: E402
 
 app = ReconUI()
 app.withdraw()
-# The app pops a modal "previous session" dialog when the local DB remembers
-# file paths; that would block a headless run.
-app._had_last_files = False
 
 # --- a synthetic sinogram with a deliberate axis offset -------------------
 SR, ND, NA = 32.0, 64, 36
