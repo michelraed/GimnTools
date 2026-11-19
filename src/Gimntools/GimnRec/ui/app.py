@@ -58,6 +58,7 @@ except Exception:
 
 from Gimntools.GimnRec.data_loaders import generate_rsector_angle
 from Gimntools.GimnRec.storage import Store
+from Gimntools.GimnRec.ui.rendering import show_image
 from Gimntools.GimnRec.filters import FBP_WINDOWS, PAD_MODES, resolve_pad_length
 
 
@@ -1200,8 +1201,9 @@ class SinogramPanel(ttk.Frame):
         self._cor_line = None
         self._axis_line = None
         r = self.app.sino_range_mm or 1.0
-        self.ax.imshow(img, aspect="auto", origin="lower", cmap=self.ctrl.get_cmap(),
-                       extent=[0, 180, -r/2, r/2], vmin=vmin, vmax=vmax)
+        show_image(self.app, self.ax, img, aspect="auto", origin="lower",
+                   cmap=self.ctrl.get_cmap(), extent=[0, 180, -r/2, r/2],
+                   vmin=vmin, vmax=vmax)
         self.ax.set_xlabel("Angle (deg)"); self.ax.set_ylabel("Distance (mm)")
         self.ax.set_title(f"Sinogram ({self.app.last_source}) — slice {z}")
         self._update_cor_line()
@@ -1628,8 +1630,8 @@ class ReconstructionPanel(ttk.Frame):
         ]):
             vmin, vmax = self.ctrl.clim(img, v, update_display=(i == 0))
             ax.clear()
-            ax.imshow(img, cmap=cmap, origin="lower", extent=ext, aspect="equal",
-                      vmin=vmin, vmax=vmax)
+            show_image(self.app, ax, img, cmap=cmap, origin="lower", extent=ext,
+                       aspect="equal", vmin=vmin, vmax=vmax)
             ax.set_title(title, fontsize=9)
             ax.set_xlabel("mm", fontsize=7); ax.set_ylabel("mm", fontsize=7)
         nm = self.current_recon["name"] if self.current_recon else self.app.last_source
@@ -1991,7 +1993,7 @@ class NemaPanel(ttk.Frame):
         data, _ = self.get_current_view()
         vmin, vmax = self.ctrl.clim(data, im["array"])
         self.ax.clear()
-        self.ax.imshow(data, cmap=self.ctrl.get_cmap(), vmin=vmin, vmax=vmax)
+        show_image(self.app, self.ax, data, cmap=self.ctrl.get_cmap(), vmin=vmin, vmax=vmax)
         self.ax.set_title(f"{im['name']} · {self.plane.get()} · slice {self.current_slice}",
                           fontsize=9)
         self.ax.axis('off')
@@ -2977,9 +2979,9 @@ class PlotReconPanel(ttk.Frame):
                     vmin = shared[i][0] if vmin is None else vmin
                     vmax = shared[i][1] if vmax is None else vmax
 
-                im = ax.imshow(p["data"], cmap=cmap, origin="lower",
-                               extent=p["ext"], vmin=vmin, vmax=vmax,
-                               aspect="auto" if kind == "sinogram" else aspect)
+                im = show_image(self.app, ax, p["data"], cmap=cmap, origin="lower",
+                                extent=p["ext"], vmin=vmin, vmax=vmax,
+                                aspect="auto" if kind == "sinogram" else aspect)
 
                 if axes_off:
                     ax.set_xticks([]); ax.set_yticks([])
@@ -3100,8 +3102,9 @@ def _f(txt):
 # ===========================================================================
 
 class ReconUI(tk.Tk):
-    def __init__(self):
+    def __init__(self, *, image_renderer=None):
         super().__init__()
+        self.image_renderer = image_renderer
         self.title("GimnTools — PET Reconstruction (GATE / PETSYS)")
         self.geometry("1300x850")
 
@@ -3159,8 +3162,8 @@ class ReconUI(tk.Tk):
         self._restore_last_files()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self.after(120, self._drain)
-        self.after(400, self._notify_last_session)
+        self._drain_job = self.after(120, self._drain)
+        self._session_notice_job = self.after(400, self._notify_last_session)
 
     # ---- file memory across sessions ----
     def _restore_last_files(self):
@@ -3179,6 +3182,7 @@ class ReconUI(tk.Tk):
             pass
 
     def _notify_last_session(self):
+        self._session_notice_job = None
         if getattr(self, "_had_last_files", False):
             messagebox.showinfo(
                 "Previous session",
@@ -3189,6 +3193,12 @@ class ReconUI(tk.Tk):
     def _on_close(self):
         self._save_files()
         self.destroy()
+
+    def destroy(self):
+        for job in (self._drain_job, self._session_notice_job):
+            if job is not None:
+                self.after_cancel(job)
+        super().destroy()
 
     # ---- thread-safe communication ----
     def log(self, msg):
@@ -3339,7 +3349,7 @@ class ReconUI(tk.Tk):
                     self._save_files()
         except queue.Empty:
             pass
-        self.after(120, self._drain)
+        self._drain_job = self.after(120, self._drain)
 
     # ---- image-grid resolution for the Reconstruction tab ----
     @staticmethod
@@ -3557,8 +3567,8 @@ class ReconUI(tk.Tk):
             self.error(traceback.format_exc())
 
 
-def main():
-    ReconUI().mainloop()
+def main(*, image_renderer=None):
+    ReconUI(image_renderer=image_renderer).mainloop()
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from Gimntools.GimnRec.analytical_response import generate_analytical_lut, kernel_summary
 from Gimntools.GimnRec.detector_response import ResponseSettings
 from Gimntools.GimnRec.reconstructor import siddon_reconstructor
+from Gimntools.GimnRec.ui.rendering import show_image
 
 
 class _Settings(simpledialog.Dialog):
@@ -108,7 +109,7 @@ def show_lut(panel, path, result):
         dx, dy = result["dx_mm"], result["dy_mm"]
         summary = kernel_summary(result, iy, ix)
         image.clear()
-        image.imshow(result["kernels"][iy, ix], origin="lower", cmap="viridis")
+        show_image(panel.app, image, result["kernels"][iy, ix], origin="lower", cmap="viridis")
         image.set_title("Kernel weights")
         profiles.clear()
         profiles.plot(dx, summary["x_profile"], label="X")
