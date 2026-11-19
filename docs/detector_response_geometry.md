@@ -9,17 +9,22 @@ FBP uses its own filtering path.
 
 ## Geometry and available data
 
-* The example PETSYS configuration describes two opposing blocks with an
-  8 × 8 grid on 3.36 mm pitch. The `crystal_size` vector
-  `[20, 26.88, 26.88]` is the block envelope. The task geometry specifies
-  3 × 3 mm segment faces and 20 mm depth.
+* PETSYS **Build sinogram** reads the detector configuration and the
+  **Angles / rsectors** table from the UI at build time. It passes the
+  geometry, detector orientations and chip-to-detector mapping to
+  `coincidence_to_lor`. This is the geometry source for a response model
+  that follows the acquisition setup.
 * `DetectorReference` flips the input coordinates into detector coordinates.
-  At local depth zero the outward radial coordinate is
-  `radius + pla_thickness`. The example fields give 37 mm to the crystal
-  entrance, or 74 mm between opposing entrances. This differs from both a
-  35 mm entrance radius and the quoted 75 mm entrance-to-entrance distance.
-  A quantitative model needs an independently confirmed crystal entrance
-  radius and a definition of the reference surface used by the calibration.
+  The local depth-zero plane used to build the sinogram is at
+  `radius + pla_thickness` from the center. The values 35 mm and 2 mm
+  in the example JSON give 37 mm in that example. With opposing detectors,
+  this gives a 74 mm separation between their reference planes. The UI
+  settings for the acquisition determine the actual value used by the code.
+* The example PETSYS configuration describes an 8 × 8 grid on 3.36 mm
+  pitch. The `crystal_size` vector `[20, 26.88, 26.88]` is the block
+  envelope. A finite-crystal model also needs the active segment face
+  dimensions (3 × 3 mm for the specified scanner), which are distinct from
+  the grid pitch.
 * For the example rotation axis `y`, `global_to_sinogram` projects onto
   `(x, z)`. PETSYS applies the configured detector-local z rotation, maps
   each chip ID to a detector, then applies the negative acquisition angle
@@ -29,12 +34,20 @@ FBP uses its own filtering path.
   histogramming. The crystal column reverses the modulo of the ID and the
   row is the integer quotient. The global-position paths use recorded hit
   coordinates. The PETSYS reader uses chip IDs for detector identity and
-  SiPM positions for hit locations. Assigning a PETSYS event to a physical
-  segment requires a verified mapping of those positions to the crystal grid.
+  ROOT SiPM positions directly for hit locations. The configured pitch
+  and grid dimensions define the nominal SiPM lattice. For a pair-aware
+  model, the reader can compare each hit with that lattice in the matching
+  local frame and retain its segment index before binning. That comparison
+  needs to establish whether the input positions represent discrete segment
+  centers or continuous hit estimates.
 * Both formats return a histogram and a table with only distance, angle
   and slice. Binning into signed radial position, normal angle modulo 180°
   and axial slice can combine multiple detector pairs or acquisition positions.
-  The resulting histogram cannot recover those event identities.
+  The resulting histogram cannot recover those event identities. The UI
+  keeps the detector configuration and sinogram angle axis with the
+  acquisition. The original detector-angle table, chip mapping and pair
+  identities are available during the build and would need to be carried
+  forward for pair-aware reconstruction.
 
 ## Phase A model
 
