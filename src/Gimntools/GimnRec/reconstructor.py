@@ -654,11 +654,17 @@ class siddon_reconstructor:
                 "the segment encoding, acquisition angles and image FOV"
             )
 
+    @staticmethod
+    def _em_support(sensitivity, floor):
+        if not np.isfinite(floor) or not 0 <= floor < 1:
+            raise ValueError("Sensitivity floor must be in [0, 1)")
+        return sensitivity > sensitivity.max() * floor
+
     def mlem(self, angles_deg, iterations=80, psf_kernel=None,
              norm_sino=None,
              regularization_every=None, regularization_sigma=None,
              verbose=True, ratio_cap=1e6, relaxation=1.0, legacy=False,
-             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None):
+             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None, checkpoint=None, sensitivity_floor=0.0):
         """
         MLEM with Siddon + radial detector response + (flood) normalization.
 
@@ -686,6 +692,13 @@ class siddon_reconstructor:
 
         response: optional DetectorResponse built for this reconstructor
                   and angular grid. Replaces the legacy projector/PSF pair.
+
+        sensitivity_floor: minimum fraction of peak full-data sensitivity.
+                   Voxels below this limit are excluded before EM to avoid
+                   amplification at the edge of the modeled field.
+
+        checkpoint: optional callback taking (slice_index, iteration, image).
+                   It is called after a complete iteration on the slice.
 
         ratio_cap: upper limit applied to the ratio y/y_est by CLIPPING
                    (not resetting). Prevents numerical blow-ups without
@@ -717,6 +730,7 @@ class siddon_reconstructor:
         norm = norm_valid
 
         sens = backward(norm)
+        support = self._em_support(sens, sensitivity_floor) if sensitivity_floor or response is not None else None
         if response is None:
             sens[sens < 1e-9] = 1e-9
 
@@ -724,6 +738,8 @@ class siddon_reconstructor:
             y = self.sinogram[z]
             b = background[z]
             x = np.ones((N, N), dtype=np.float64)
+            if support is not None:
+                x[~support] = 0
             for it in range(iterations):
                 Ax = forward(np.clip(x, 0, None))
                 if legacy:
@@ -749,6 +765,10 @@ class siddon_reconstructor:
                 # --- inter-iteration REGULARIZATION (not the system model) ---
                 if reg_every > 0 and (it+1) % reg_every == 0:
                     x = gaussian_filter(x, sigma=reg_sigma, mode='nearest')
+                    if support is not None:
+                        x[~support] = 0
+                if checkpoint is not None:
+                    checkpoint(z, it + 1, x)
             rec[z] = x
             if verbose:
                 reg_txt = (f", reg sigma={reg_sigma} every {reg_every}it"
@@ -761,7 +781,7 @@ class siddon_reconstructor:
              regularization_every=None, regularization_sigma=None,
              verbose=True, ratio_cap=1e6, relaxation=1.0,
              subset_order="interleaved", warn_subsets=True, legacy=False,
-             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None):
+             gauss_every=None, gauss_sigma=None, background_sino=None, *, response=None, checkpoint=None, sensitivity_floor=0.0):
         """
         OSEM with Siddon + radial detector response + (flood) normalization.
 
@@ -775,7 +795,7 @@ class siddon_reconstructor:
         norm_sino and response: same logic as in mlem. Each angular subset
         uses the matching rows and the transpose of its own forward operator.
 
-        ratio_cap / legacy: see the mlem() docstring.
+        ratio_cap / legacy / sensitivity_floor / checkpoint: see mlem().
 
         subset_order : 'interleaved' (default) or 'contiguous'.
             'interleaved' — each subset samples angles spread over the whole
@@ -838,7 +858,9 @@ class siddon_reconstructor:
             if response is None:
                 sensitivity[sensitivity < 1e-9] = 1e-9
             sens_sub.append(sensitivity)
-        support = np.any(np.asarray(sens_sub) > 0, axis=0) if response is not None else None
+        support = None
+        if sensitivity_floor or response is not None:
+            support = self._em_support(np.sum(sens_sub, axis=0), sensitivity_floor)
 
         for z in range(self.n_slices):
             sino_z = self.sinogram[z]
@@ -874,6 +896,10 @@ class siddon_reconstructor:
                 # --- inter-iteration REGULARIZATION (not the system model) ---
                 if reg_every > 0 and (it+1) % reg_every == 0:
                     x = gaussian_filter(x, sigma=reg_sigma, mode='nearest')
+                    if support is not None:
+                        x[~support] = 0
+                if checkpoint is not None:
+                    checkpoint(z, it + 1, x)
             rec[z] = x
             if verbose:
                 reg_txt = (f", reg sigma={reg_sigma} every {reg_every}it"

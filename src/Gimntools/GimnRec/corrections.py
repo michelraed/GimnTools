@@ -290,3 +290,63 @@ def analyze_cor_from_file(cal_file, bg_file, detector_config, detectors_angles,
 
     print(f"\n  >>> Calibrated COR: dx={dx:+.3f} mm, dy={dy:+.3f} mm <<<\n")
     return dx, dy
+
+
+def estimate_sinogram_cor(sinogram, radial_range_mm, angles_deg, *, background=None):
+    """Fit a constant radial offset and two nuisance position terms.
+
+    Uses populated projections, robust regression and angular-block
+    jackknife stability. This is a data-based candidate; asymmetric
+    acceptance and truncation can bias it.
+    """
+    from scipy.optimize import least_squares
+
+    data = np.asarray(sinogram, dtype=float)
+    angles = np.asarray(angles_deg, dtype=float)
+    if (data.ndim != 3 or not data.size or angles.shape != (data.shape[2],)
+            or not np.isfinite(angles).all() or not np.isfinite(radial_range_mm) or radial_range_mm <= 0):
+        raise ValueError("COR estimation requires a sinogram with physical radial and angular axes")
+    projections = data.sum(axis=0)
+    if background is not None:
+        b = np.broadcast_to(background, data.shape)
+        projections = np.maximum(projections - b.sum(axis=0), 0)
+    counts = projections.sum(axis=0)
+    nonempty = counts[counts > 0]
+    if nonempty.size < 6:
+        raise ValueError("Too few populated projections for a COR estimate")
+    keep = counts >= max(1., 0.05 * np.median(nonempty))
+    pitch = radial_range_mm / data.shape[1]
+    distance = pitch * (np.arange(data.shape[1]) + 0.5 - data.shape[1] / 2)
+    observed = distance @ projections[:, keep] / counts[keep]
+    order = np.argsort(angles[keep])
+    a = np.deg2rad(angles[keep][order])
+    y = observed[order]
+    design = np.column_stack((np.ones(len(a)), np.cos(a), np.sin(a)))
+    if len(a) < 6 or np.linalg.cond(design) > 30:
+        raise ValueError("Populated projections cover too little angle to separate COR and source position")
+    weights = np.sqrt(np.clip(counts[keep][order] / np.median(counts[keep]), 0.1, 4.0))
+    initial, *_ = np.linalg.lstsq(design * weights[:, None], y * weights, rcond=None)
+    delta = y - design @ initial
+    scale = max(0.15 * pitch, 1.4826 * np.median(np.abs(delta - np.median(delta))))
+
+    def fit(mask):
+        m, v, w = design[mask], y[mask], weights[mask]
+        return least_squares(lambda coefficients: w * (m @ coefficients - v),
+                             initial, loss="soft_l1", f_scale=scale).x
+
+    full = np.ones(len(a), dtype=bool)
+    coefficients = fit(full)
+    repeats = []
+    for indices in np.array_split(np.arange(len(a)), 6):
+        mask = full.copy()
+        mask[indices] = False
+        if np.linalg.cond(design[mask]) <= 30:
+            repeats.append(fit(mask)[0])
+    uncertainty = (np.std(repeats, ddof=0) * np.sqrt(len(repeats) - 1)
+                   if len(repeats) > 1 else np.nan)
+    return float(coefficients[0]), {
+        "used_angles": len(a),
+        "rms_mm": float(np.sqrt(np.mean((y - design @ coefficients)**2))),
+        "stability_mm": float(uncertainty),
+        "position_amplitude_mm": float(np.linalg.norm(coefficients[1:])),
+    }

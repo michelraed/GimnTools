@@ -35,6 +35,25 @@ class _ThemedCanvas(FigureCanvasTkAgg):
         super().draw()
 
 
+def configure_typography(root):
+    """Prefer a readable proportional UI font on each desktop."""
+    installed = {name.casefold(): name for name in font.families(root=root)}
+    family = font.nametofont("TkDefaultFont", root=root).actual("family")
+    families = ("Inter", "Segoe UI", "Helvetica Neue", "Noto Sans", "Ubuntu",
+                "DejaVu Sans", "Liberation Sans", "URW Gothic L", "Helvetica", "Arial")
+    for candidate in families:
+        selected = installed.get(candidate.casefold())
+        if selected:
+            trial = font.Font(root=root, family=selected, size=11)
+            if trial.measure("iii") < trial.measure("mmm"):
+                family = trial.actual("family")
+                break
+    for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkCaptionFont"):
+        font.nametofont(name, root=root).configure(family=family, size=11)
+    font.nametofont("TkHeadingFont", root=root).configure(family=family, size=11, weight="bold")
+    return family
+
+
 class DesktopAppearance:
     def __init__(self, root, store):
         self.root = root
@@ -43,20 +62,9 @@ class DesktopAppearance:
         self.style = ttk.Style(root)
         self.style.theme_create("gimntools", parent="clam")
         self.style.theme_use("gimntools")
-        family = font.nametofont("TkDefaultFont", root=root).actual("family")
-        installed = {name.casefold(): name for name in font.families(root=root)}
-        for candidate in ("Inter", "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans",
-                          "Liberation Sans", "Nimbus Sans L", "Helvetica", "Arial"):
-            if candidate.casefold() not in installed:
-                continue
-            trial = font.Font(root=root, family=installed[candidate.casefold()], size=10)
-            if trial.measure("iii") != trial.measure("mmm"):
-                family = trial.actual("family")
-                break
-        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
-            font.nametofont(name, root=root).configure(family=family, size=10)
-        self.heading = font.Font(root=root, family=family, size=17, weight="bold")
-        self.strong = font.Font(root=root, family=family, size=10, weight="bold")
+        family = configure_typography(root)
+        self.heading = font.Font(root=root, family=family, size=18, weight="bold")
+        self.strong = font.nametofont("TkHeadingFont", root=root)
         saved = store.get_setting("vtk_desktop_theme", "dark")
         self.mode = tk.StringVar(root, value=saved if saved in ("light", "dark") else "dark")
         self.apply()
@@ -123,7 +131,8 @@ class DesktopAppearance:
                   foreground=[("disabled", p["muted"])], bordercolor=[("focus", p["accent"])])
         for name in ("TCheckbutton", "TRadiobutton"):
             s.map(name, indicatorbackground=[("selected", p["accent"]), ("!selected", p["surface"])])
-        s.configure("Treeview", background=p["surface"], fieldbackground=p["surface"], rowheight=27)
+        s.configure("Treeview", background=p["surface"], fieldbackground=p["surface"],
+                    rowheight=font.nametofont("TkDefaultFont", root=self.root).metrics("linespace") + 9)
         s.configure("Treeview.Heading", background=p["raised"], font=self.strong)
         s.map("Treeview", background=[("selected", p["selection"])],
               foreground=[("selected", p["text"])])

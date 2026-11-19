@@ -265,6 +265,46 @@ without the ROOTs. **Reconstruct batch…** applies the selected image grid
 and method to the selection in sequence, preserving each sinogram's detector
 setup and COR.
 
+### 3D list mode and convergence
+
+In **Reconstruction → List mode**, select an NPZ with an `events` matrix
+of shape `(N, 8)` or eight one-dimensional arrays named
+`x1, y1, z1, E1, x2, y2, z2, E2`. Positions are in mm and energies are
+in keV. Use a single common XYZ object frame. For endpoints still in the
+scanner frame, add one `gantry_deg` per event and an optional scalar
+`rotation_axis` (`x`, `y` or `z`, default `z`). The importer rotates
+both endpoints by the negative gantry angle. Enter the reconstruction grid
+and its centre in the same physical frame. One subset runs 3D LM-MLEM;
+more runs LM-OSEM with deterministic randomized event subsets. The 3D rays
+are projected directly from their two endpoints.
+
+For quantitative relative efficiency, include either a nonnegative
+`sensitivity` volume in `(z,y,x)` order, matching the entered grid, or
+independent `normalization_lors` in the same object frame as an `(N,6)`
+array of XYZ endpoint pairs with optional `normalization_weights`.
+Without calibration the reconstruction assumes uniform sensitivity on
+illuminated voxels. The optional energy window applies to both hits.
+
+**Reconstruction → Convergence** runs selected EM checkpoints for a
+sinogram or the current list-mode NPZ. Select iterations and subsets,
+then compare percent contrast, background coefficient of variation and
+contrast-to-noise ratio. The tool detects source positions in a short
+MLEM reference, keeps the same ROIs across comparisons, and clamps
+extreme ROI samples for the mean and deviation. The **Chart** controls
+change axes, colours, typography and line style. Each acquisition's
+result can be saved as a CSV or a figure. The suggested checkpoint
+minimizes subset updates among settings within 95% of the best median
+normalized CNR on the first case tested.
+
+The **Sinogram** COR estimator fits a radial constant and two sinusoidal
+terms for unknown object position. It reports how the constant changes
+when leaving out angular blocks. For sinograms, **Compare estimated COR**
+reconstructs with both the saved and estimated values on the same ROIs.
+Bias from angular acceptance or truncation can remain. The analytical
+GUI model's **Min sensitivity** defaults to 0.5% of peak modeled
+sensitivity in `auto`, limiting unstable updates in weakly covered voxels.
+The explicit value `0` keeps all voxels in the model support.
+
 Tkinter needs an available graphical display. First Numba compilation can be
 slow. In case of GUI problems, first reproduce the computation with the CLI.
 

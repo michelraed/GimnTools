@@ -42,7 +42,7 @@ except ModuleNotFoundError:
 import numpy as np
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, font, messagebox, simpledialog
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -74,22 +74,29 @@ METHOD_OPTIONS = ["osem", "mlem", "fbp"]
 #  Utility widgets
 # ===========================================================================
 
+def _form_label(parent, label):
+    family = font.nametofont("TkDefaultFont", root=parent)
+    unit_width = max(1, family.measure("0"))
+    width = max(16, (family.measure(label) + unit_width - 1) // unit_width)
+    ttk.Label(parent, text=label, width=width).pack(side=tk.LEFT, padx=(0, 4))
+
+
 def labeled_combo(parent, label, var, values, width=20):
     row = ttk.Frame(parent); row.pack(fill=tk.X, pady=1)
-    ttk.Label(row, text=label, width=16).pack(side=tk.LEFT)
+    _form_label(row, label)
     ttk.Combobox(row, textvariable=var, values=values, state="readonly",
                  width=width).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
 
 def labeled_entry(parent, label, var, width=10):
     row = ttk.Frame(parent); row.pack(fill=tk.X, pady=1)
-    ttk.Label(row, text=label, width=16).pack(side=tk.LEFT)
+    _form_label(row, label)
     ttk.Entry(row, textvariable=var, width=width).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
 
 def labeled_spin(parent, label, var, lo, hi, is_double=False, width=10):
     row = ttk.Frame(parent); row.pack(fill=tk.X, pady=1)
-    ttk.Label(row, text=label, width=16).pack(side=tk.LEFT)
+    _form_label(row, label)
     ttk.Spinbox(row, from_=lo, to=hi, textvariable=var, width=width,
                 increment=(0.1 if is_double else 1)).pack(side=tk.LEFT)
 
@@ -1294,33 +1301,20 @@ class SinogramPanel(ttk.Frame):
         self._dragging = False
 
     def _estimate(self):
-        if self.app.sino is None:
-            messagebox.showwarning("No sinogram", "Build a sinogram first.")
+        entry = self.app.get_sinogram(self.app.current_sino_name)
+        if entry is None:
+            messagebox.showwarning("No sinogram", "Build or load a sinogram first.", parent=self)
             return
+        from Gimntools.GimnRec.corrections import estimate_sinogram_cor
         try:
-            from Gimntools.GimnRec.corrections import estimate_cor_offset
-            n_dist = self.app.sino.shape[1]
-            srange = float(self.app.sino_range_mm or n_dist)
-            bw = srange / n_dist
-            bins = np.linspace(-srange/2 + bw/2, srange/2 - bw/2, n_dist)
-            z = int(float(self.scale.get()))
-            d, info = estimate_cor_offset(self.app.sino, bins,
-                                          self.app.angles, slice_idx=z)
-            self.var_cor.set(round(float(d), 6))
-            amp = info.get("sinusoid_amplitude_mm", float("nan"))
-            self.app.log(f"[COR] estimate {d:+.4f} mm from slice {z} "
-                         f"({info['n_used']} columns, object sinusoid "
-                         f"amplitude {amp:.4f} mm)")
-            if np.isfinite(amp) and amp > 2.0 * abs(d) and amp > 1e-3:
-                messagebox.showwarning(
-                    "COR estimate unreliable",
-                    "The angle-dependent (object off-centre) term dominates "
-                    "the constant term.\n\nA constant COR cannot correct "
-                    "that: either the object is not centred on the axis, or "
-                    "the misalignment is a translation rather than an axis "
-                    "offset. Treat this number as unvalidated.")
-        except Exception:
-            self.app.error(traceback.format_exc())
+            value, info = estimate_sinogram_cor(entry["sino"], entry["sino_range_mm"],
+                                                entry["angles"], background=entry["background"])
+        except ValueError as exc:
+            self.app.error(str(exc))
+            return
+        self.var_cor.set(round(value, 6))
+        self.app.log(f"[COR] {entry['name']}: {value:+.3f} mm from {info['used_angles']} projections, "
+                     f"angular-block variation {info['stability_mm']:.3f} mm, residual RMS {info['rms_mm']:.3f} mm")
 
     def _on_scroll(self, event):
         if self.app.sino is None:
@@ -1420,6 +1414,8 @@ class ReconstructionPanel(ttk.Frame):
             "method": tk.StringVar(value="osem"), "iters": tk.IntVar(value=10),
             "subsets": tk.IntVar(value=4), "gevery": tk.IntVar(value=5),
             "em_relaxation": tk.DoubleVar(value=1.0),
+            "ratio_cap": tk.DoubleVar(value=1e6),
+            "sensitivity_pct": tk.StringVar(value="auto"),
             "gsigma": tk.DoubleVar(value=0.4), "use_psf": tk.BooleanVar(value=False),
             "fwhm": tk.DoubleVar(value=3.0), "legacy": tk.BooleanVar(value=False),
             # --- image grid (volume-driven reconstruction) ---
@@ -1446,6 +1442,10 @@ class ReconstructionPanel(ttk.Frame):
         labeled_spin(box, "iterations", self.v["iters"], 1, 500)
         labeled_spin(box, "subsets (OSEM)", self.v["subsets"], 1, 64)
         labeled_spin(box, "EM relaxation", self.v["em_relaxation"], 0.1, 1.0, is_double=True)
+        labeled_entry(box, "EM ratio cap", self.v["ratio_cap"])
+        labeled_entry(box, "Min sensitivity (auto / %)", self.v["sensitivity_pct"])
+        ttk.Label(box, text="Auto uses 0.5% of peak sensitivity for the analytical model. 0 keeps the full support.",
+                  style="Hint.TLabel", wraplength=270).pack(anchor="w")
         labeled_spin(box, "gauss_every", self.v["gevery"], 0, 100)
         labeled_spin(box, "gauss_sigma", self.v["gsigma"], 0.0, 10.0, is_double=True)
         ttk.Checkbutton(box, text="Legacy EM (old behaviour)",
@@ -1819,20 +1819,14 @@ class ReconstructionPanel(ttk.Frame):
         self.on_new_volume()
 
     def _voxel_sizes(self):
-        """(dxy, dz) in mm. Uses the spacing of the selected reconstruction (respects MHD
-        loaded); it only falls back to detector_config when there is no
-        current reconstruction."""
+        """Return X, Y and Z spacing in millimetres."""
         if self.current_recon and self.current_recon.get("spacing"):
-            sx, sy, sz = self.current_recon["spacing"]
-            return float(sx), float(sz)
+            return tuple(map(float, self.current_recon["spacing"]))
         nx = self.app.volume.shape[2] if self.app.volume is not None else 128
-        dxy = (self.app.fov_mm / nx) if self.app.fov_mm else 1.0
-        dz = dxy
-        try:
-            dz = float(np.asarray(self.app.detector_config["sipm_pitch"])[1])
-        except Exception:
-            dz = dxy
-        return dxy, dz / (getattr(self.app, "vol_zoom", 1) or 1)
+        dxy = self.app.fov_mm / nx if self.app.fov_mm else 1.
+        entry = self.app.get_sinogram(self.app.current_sino_name)
+        dz = self.app._axial_spacing(entry, dxy) if entry else dxy
+        return dxy, dxy, dz / (getattr(self.app, "vol_zoom", 1) or 1)
 
     def on_new_volume(self):
         nz, ny, nx = self.app.volume.shape
@@ -1863,10 +1857,16 @@ class ReconstructionPanel(ttk.Frame):
         z = min(max(int(float(self.scales["z"].get())), 0), nz - 1)
         y = min(max(int(float(self.scales["y"].get())), 0), ny - 1)
         x = min(max(int(float(self.scales["x"].get())), 0), nx - 1)
-        dxy, dz = self._voxel_sizes()
-        ext_ax = [0, nx * dxy, 0, ny * dxy]
-        ext_co = [0, nx * dxy, 0, nz * dz]
-        ext_sa = [0, ny * dxy, 0, nz * dz]
+        sx, sy, sz = self._voxel_sizes()
+        rec = self.current_recon or {}
+        origin = rec.get("origin") if rec.get("method", "").startswith("LM-") else None
+        low = np.asarray(origin) - np.asarray((sx, sy, sz)) / 2 if origin is not None else (0, 0, 0)
+        x_range = (low[0], low[0] + nx * sx)
+        y_range = (low[1], low[1] + ny * sy)
+        z_range = (low[2], low[2] + nz * sz)
+        ext_ax = x_range + y_range
+        ext_co = x_range + z_range
+        ext_sa = y_range + z_range
         cmap = self.ctrl.get_cmap()
         for i, (ax, img, title, ext) in enumerate([
             (self.ax_ax, v[z], f"Axial Z={z}", ext_ax),
@@ -1896,21 +1896,25 @@ class ReconstructionPanel(ttk.Frame):
             return
         try:
             import SimpleITK as sitk
-            dxy, dz = self._voxel_sizes()
+            sx, sy, sz = self._voxel_sizes()
             arr = np.asarray(self.app.volume).astype(np.float32)
             img = sitk.GetImageFromArray(arr)
-            img.SetSpacing([dxy, dxy, dz])
-            img.SetOrigin([-(arr.shape[2]*dxy)/2 + dxy/2,
-                           -(arr.shape[1]*dxy)/2 + dxy/2,
-                           -(arr.shape[0]*dz)/2 + dz/2])
-            geometry = (self.current_recon or {}).get("geometry", {})
+            img.SetSpacing((sx, sy, sz))
+            entry = self.current_recon or {}
+            origin = entry.get("origin", (-(arr.shape[2] - 1) * sx / 2,
+                                          -(arr.shape[1] - 1) * sy / 2,
+                                          -(arr.shape[0] - 1) * sz / 2))
+            img.SetOrigin(origin)
+            if "direction" in entry:
+                img.SetDirection(entry["direction"])
+            geometry = entry.get("geometry", {})
             if "detector_response" in geometry:
                 import json
                 img.SetMetaData("GimnToolsDetectorResponse",
                                 json.dumps(geometry["detector_response"]))
             sitk.WriteImage(img, path)
             self.app.log(f"[{fmt.upper()} saved] {path} "
-                         f"(voxel {dxy:.3f}×{dxy:.3f}×{dz:.3f} mm)")
+                         f"(voxel {sx:.3f}×{sy:.3f}×{sz:.3f} mm)")
             messagebox.showinfo("Saved", f"Volume saved to:\n{path}")
         except Exception as e:
             messagebox.showerror("Save error", str(e))
@@ -2102,7 +2106,7 @@ class NemaPanel(ttk.Frame):
         ttk.Label(rs, text="raio(px)").pack(side=tk.LEFT)
         ttk.Entry(rs, textvariable=self.radius, width=6).pack(side=tk.LEFT, padx=2)
         ttk.Label(gr, text="(click = fixed size; drag = variable)",
-                  style="Hint.TLabel", font=("", 7)).pack(anchor="w")
+                  style="Hint.TLabel").pack(anchor="w")
 
         self.ctrl = ImageControls(left, self.update_image, default_cmap="gray",
                                   default_mode="volume")
@@ -2119,13 +2123,13 @@ class NemaPanel(ttk.Frame):
         bind_wheel_slices(self.canvas, self._on_scroll)
 
         right = ttk.Frame(self, width=430, padding=6); right.pack(side=tk.RIGHT, fill=tk.Y)
-        ttk.Label(right, text="ROI pendente (NEMA)", font=("Arial", 10, "bold")).pack()
-        self.stats_text = tk.Text(right, height=8, width=48, font=("Courier", 9))
+        ttk.Label(right, text="ROI pendente (NEMA)", font="TkHeadingFont").pack()
+        self.stats_text = tk.Text(right, height=8, width=48, font="TkTextFont")
         self.stats_text.pack(pady=4)
         rb = ttk.Frame(right); rb.pack(fill=tk.X)
         ttk.Button(rb, text="Add to table", command=self._commit_pending).pack(side=tk.LEFT, padx=2)
         ttk.Button(rb, text="Copy sel. ROI", command=self.copy_roi).pack(side=tk.LEFT, padx=2)
-        ttk.Label(right, text="ROIs of the current image", font=("Arial", 10, "bold")).pack(pady=(8, 0))
+        ttk.Label(right, text="ROIs of the current image", font="TkHeadingFont").pack(pady=(8, 0))
         cols = ("ID", "shape", "FW_X(mm)", "FW_Y(mm)", "Max", "Mean", "Std")
         self.tree = ttk.Treeview(right, columns=cols, show='headings', height=11)
         for c, w in zip(cols, (28, 56, 64, 64, 50, 50, 50)):
@@ -3380,7 +3384,12 @@ class ReconUI(tk.Tk):
             self.appearance = DesktopAppearance(self, self.store)
             self.minsize(940, 660)
         else:
+            from Gimntools.GimnRec.ui.appearance import configure_typography
+
+            configure_typography(self)
             style = ttk.Style(self)
+            style.configure(".", font="TkDefaultFont")
+            style.configure("TNotebook.Tab", padding=(10, 5))
             style.configure("Hint.TLabel", foreground="#666")
             style.configure("Emphasis.TLabel", foreground="#036")
 
@@ -3389,7 +3398,15 @@ class ReconUI(tk.Tk):
         self.gate = GatePanel(self.notebook, self)
         self.petsys = PetsysPanel(self.notebook, self)
         self.sino_panel = SinogramPanel(self.notebook, self)
-        self.recon_panel = ReconstructionPanel(self.notebook, self)
+        from Gimntools.GimnRec.ui.em_panels import ConvergencePanel, ListmodePanel
+
+        self.recon_workspace = ttk.Notebook(self.notebook)
+        self.recon_panel = ReconstructionPanel(self.recon_workspace, self)
+        self.convergence_panel = ConvergencePanel(self.recon_workspace, self)
+        self.listmode_panel = ListmodePanel(self.recon_workspace, self)
+        self.recon_workspace.add(self.recon_panel, text="Sinogram reconstruction")
+        self.recon_workspace.add(self.listmode_panel, text="List mode")
+        self.recon_workspace.add(self.convergence_panel, text="Convergence")
         self.profiles_panel = ProfilesPanel(self.notebook, self)
         self.plot_panel = PlotReconPanel(self.notebook, self)
         self.nema_panel = NemaPanel(self.notebook, self)
@@ -3399,14 +3416,14 @@ class ReconUI(tk.Tk):
         self.notebook.add(self.gate, text="GATE")
         self.notebook.add(self.petsys, text="PETSYS")
         self.notebook.add(self.sino_panel, text="Sinogram")
-        self.notebook.add(self.recon_panel, text="Reconstruction")
+        self.notebook.add(self.recon_workspace, text="Reconstruction")
         self.notebook.add(self.dicom_panel, text="DICOM")
         self.notebook.add(self.plot_panel, text="Plot Recon")
         self.notebook.add(self.nema_panel, text="NEMA FWHM")
         self.notebook.add(self.profiles_panel, text="Profiles")
 
         self.log_text = tk.Text(self, height=4 if themed else 7,
-                                state="disabled", font=("monospace", 8))
+                                state="disabled", font="TkTextFont")
         if themed:
             self.log_text.pack(fill=tk.X, side=tk.BOTTOM, before=self.notebook, padx=12, pady=(6, 12))
         else:
@@ -3651,14 +3668,23 @@ class ReconUI(tk.Tk):
                 elif kind == "sino_refresh":
                     self.sino_panel.on_new()
                     self.recon_panel.refresh_sino_list(select=payload)
+                    self.convergence_panel.refresh()
                     self.notebook.select(self.sino_panel)
                 elif kind == "vol_refresh":
                     self.recon_panel.on_new_volume()
-                    self.notebook.select(self.recon_panel)
+                    self.notebook.select(self.recon_workspace)
+                    self.recon_workspace.select(self.recon_panel)
                 elif kind == "recon_list_refresh":
                     self.recon_panel.refresh_recon_list()
                     self.plot_panel.refresh_available()
                     self.dicom_panel.refresh()
+                elif kind == "convergence_ready":
+                    self.convergence_panel.show_result(*payload)
+                elif kind == "convergence_failed":
+                    self.convergence_panel.status.set("The sweep could not be completed.")
+                elif kind == "listmode_ready":
+                    self._publish_reconstruction(self._study_generation, payload, "List mode", payload["method"])
+                    self.listmode_panel.result.set(payload["info"])
                 elif kind == "dicom_ready":
                     self.dicom_panel.export_ready(payload)
                     self.log(f"[DICOM] saved series in {payload}")
@@ -3705,8 +3731,17 @@ class ReconUI(tk.Tk):
             raise ValueError(f"unknown grid mode: {mode!r}")
         return kw
 
+    @staticmethod
+    def _axial_spacing(entry, default):
+        from Gimntools.GimnRec.utils import resolve_slice_thickness
+
+        config = entry.get("detector_config") or {}
+        if "sipm_pitch" in config or "slice_thickness_mm" in config:
+            return resolve_slice_thickness(config, entry["sino"].shape[0])
+        return default
+
     # ---- reconstruction (from the Reconstruction tab) ----
-    def run_recon(self, params, sino_name=None, recon_name=None):
+    def run_recon(self, params, sino_name=None, recon_name=None, *, sweep=None):
         try:
             from Gimntools.GimnRec.reconstructor import siddon_reconstructor
             from Gimntools.GimnRec.filters import ramLak, make_psf_kernel
@@ -3807,22 +3842,60 @@ class ReconUI(tk.Tk):
                         raise ValueError("Build the sinogram with geometric normalization disabled for an analytical LUT")
                 elif mode == "Existing radial Gaussian" or params["use_psf"].get():
                     psf = make_psf_kernel(float(params["fwhm"].get()), srange / sino.shape[1])
-            em_options = {"response": response} if response is not None else {}
-            relaxation = float(params["em_relaxation"].get()) if "em_relaxation" in params else 1.0
-            if method == "osem":
-                vol = r.osem(angles, iterations=int(params["iters"].get()),
-                             subsets_n=int(params["subsets"].get()), psf_kernel=psf,
-                             norm_sino=norm, background_sino=background,
-                             regularization_every=int(params["gevery"].get()),
-                             regularization_sigma=float(params["gsigma"].get()),
-                             legacy=params["legacy"].get(), relaxation=relaxation, verbose=False, **em_options)
-            elif method == "mlem":
-                vol = r.mlem(angles, iterations=int(params["iters"].get()),
-                             psf_kernel=psf, norm_sino=norm,
-                             background_sino=background,
-                             regularization_every=int(params["gevery"].get()),
-                             regularization_sigma=float(params["gsigma"].get()),
-                             legacy=params["legacy"].get(), relaxation=relaxation, verbose=False, **em_options)
+            if method in ("osem", "mlem"):
+                auto_floor = 0.005 if mode == "Analytical detector response" else 0.0
+                floor_control = params.get("sensitivity_pct")
+                floor = str(floor_control.get()).strip().lower() if floor_control else "0"
+                sensitivity_floor = auto_floor if floor == "auto" else float(floor) / 100
+                if sensitivity_floor:
+                    self.log(f"[{entry['name']}] relative sensitivity floor {100*sensitivity_floor:.3g}%")
+                em_options = dict(
+                    psf_kernel=psf, norm_sino=norm, background_sino=background,
+                    regularization_every=int(params["gevery"].get()),
+                    regularization_sigma=float(params["gsigma"].get()),
+                    legacy=params["legacy"].get(), verbose=False,
+                    relaxation=float(params["em_relaxation"].get()) if "em_relaxation" in params else 1.0,
+                    ratio_cap=float(params["ratio_cap"].get()) if "ratio_cap" in params else 1e6,
+                    response=response,
+                    sensitivity_floor=sensitivity_floor,
+                )
+
+                def run(iterations, subsets, checkpoint=None):
+                    if subsets > 1:
+                        return r.osem(angles, iterations=iterations, subsets_n=subsets,
+                                      checkpoint=checkpoint, **em_options)
+                    return r.mlem(angles, iterations=iterations, checkpoint=checkpoint, **em_options)
+
+                if sweep is not None:
+                    from Gimntools.GimnRec.convergence import convergence_series, detect_source_regions
+
+                    iterations = sweep["iterations"]
+                    regions = sweep.get("regions")
+                    if regions is None:
+                        reference = run(min(4, max(iterations)), 1)
+                        support = None
+                        if response is not None and response.doi is not None:
+                            sensitivity = np.asarray(response.doi.sum(axis=0)).reshape(reference.shape[1:])
+                            support = sensitivity > sensitivity.max() * sensitivity_floor
+                        regions = detect_source_regions(
+                            reference, (r.voxel_mm, r.voxel_mm, self._axial_spacing(entry, r.voxel_mm)),
+                            radius_mm=sweep["radius_mm"], source_count=sweep["source_count"],
+                            relative_threshold=sweep["threshold"],
+                            search_radius_mm=sweep.get("search_radius_mm") or srange / 2, support=support)
+                    rows = convergence_series(run, regions, iterations, sweep["subsets"],
+                                              cor_mm=r.cor_mm, label=sweep["case"])
+                    return rows, regions
+                num_iterations = int(params["iters"].get())
+                if method == "osem":
+                    num_subsets = int(params["subsets"].get())
+                    acquisition = entry.get("acquisition") or {}
+                    if acquisition.get("observed_count") and acquisition.get("object_angles_deg"):
+                        from Gimntools.GimnRec.reconstructor import check_subset_count
+
+                        check_subset_count(len(acquisition["object_angles_deg"]), num_subsets)
+                    vol = r.osem(angles, iterations=num_iterations, subsets_n=num_subsets, **em_options)
+                else:
+                    vol = r.mlem(angles, iterations=num_iterations, **em_options)
             else:
                 from Gimntools.GimnRec.filters import make_fbp_filter
                 window = params["fbp_window"].get()
@@ -3858,12 +3931,8 @@ class ReconUI(tk.Tk):
             # physical spacing (upsample already folded into dz).
             # dxy comes from the RESOLVED grid, not from fov/n_dist: the two
             # are independent once a volume-driven grid is selected.
-            dxy = r.voxel_mm; dz = dxy
-            try:
-                dz = float(np.asarray(cfg["sipm_pitch"])[1])
-            except Exception:
-                dz = dxy
-            dz = dz / zoom
+            dxy = r.voxel_mm
+            dz = self._axial_spacing(entry, dxy) / zoom
             nm = (recon_name or "").strip() or f"{entry['name']}_{method}"
             rec = {"name": nm, "volume": vol, "spacing": (dxy, dxy, dz),
                    "source": entry["name"], "method": method,
@@ -3893,8 +3962,12 @@ class ReconUI(tk.Tk):
             self.log(f"[{nm}] reconstruction ready: {vol.shape}, "
                      f"voxel {dxy:.3f}×{dxy:.3f}×{dz:.3f} mm")
         except ValueError as exc:
+            if sweep is not None:
+                raise
             self.error(str(exc))
         except Exception:
+            if sweep is not None:
+                raise
             self.error(traceback.format_exc())
 
 
