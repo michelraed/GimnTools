@@ -173,11 +173,11 @@ def _gate_centers(space, cfg, rsectors):
             for sector, name in rsectors.items() if name in space.detectors}
 
 
-def _gate_points(data, block, space, centers, step_deg):
+def _gate_points(data, block, space, centers, step_deg, *, pose_degrees=None):
     points = []
     axial = None
     if centers is not None:
-        axial = np.zeros(len(data["runID"][block]), dtype=np.intp)
+        axial = np.zeros(len(data["crystalID1"][block]), dtype=np.intp)
         total_crystals = space.cols * space.rows
         for hit in (1, 2):
             crystal = data[f"crystalID{hit}"][block]
@@ -196,9 +196,10 @@ def _gate_points(data, block, space, centers, step_deg):
     else:
         points = [np.column_stack([data[f"globalPos{axis}{hit}"][block] for axis in "XYZ"])
                   .astype(float, copy=False) for hit in (1, 2)]
-    if step_deg:
-        angles = -step_deg * data["runID"][block].astype(np.int64)
-        rotation = ROT.from_euler(space.rotate_along, angles[:, None], degrees=True)
+    if pose_degrees is None and step_deg:
+        pose_degrees = step_deg * data["runID"][block].astype(np.int64)
+    if pose_degrees is not None:
+        rotation = ROT.from_euler(space.rotate_along, -pose_degrees[:, None], degrees=True)
         points = [rotation.apply(coords) for coords in points]
     return points, axial
 
