@@ -291,6 +291,23 @@ array of XYZ endpoint pairs with optional `normalization_weights`.
 Without calibration the reconstruction assumes uniform sensitivity on
 illuminated voxels. The optional energy window applies to both hits.
 
+Use **Select NPZ batch...** to choose multiple list-mode acquisitions,
+then **Reconstruct batch...** to apply the same EM and grid settings to
+each. The queue shows each file's progress. Each file retains its own
+detector geometry and acquisition poses. Both launchers remember the
+**Backend** setting for sinogram and list-mode reconstruction in the
+same SQLite database. CUDA is optional and requires a compatible
+NVIDIA driver. From a checkout, install `python -m pip install -e '.[cuda]'`.
+See the [CUDA and profiling guide](docs/RECONSTRUCTION_PERFORMANCE.md).
+
+With independently simulated or measured crystal-pair tallies, use
+**Use physical crystal-pair matrix** to load the response and
+sensitivity together. A companion `acquisition.physical.npz` can be
+discovered next to `acquisition.npz`. This is available for discrete
+PETSYS and GATE crystal readout in list mode. The
+[calibration guide](docs/DETECTOR_RESPONSE_LUT.md) covers the
+`gimntools_physics` CLI and compatible acquisitions.
+
 ### Pseudo-simulator
 
 Select **Pseudo-simulator → Phantom** to design a Derenzo, IEC-inspired
@@ -318,10 +335,13 @@ position according to its configured position mode.
 
 **ROOT to list mode** reads the original GATE or PETSYS coincidence tree
 in batches and exports the recorded events. PETSYS uses the recorded
-gantry angle, corrected energy and SiPM coordinates. GATE uses the run
-transform from the sinogram builder, with an option to use the recorded
-global positions instead of crystal centres. The GATE energy unit defaults
-to MeV. Binned sinograms have already lost individual hit pairs and energies.
+gantry angle, corrected energy and SiPM coordinates. GATE uses a recorded
+pose branch when available or the recorded run IDs with their configured
+angular step. Custom branches can specify degrees or radians. A GATE file
+may also supply object-frame global positions instead of crystal centres.
+The GATE energy unit defaults to MeV. **Export multiple ROOTs...** writes
+one NPZ per input and sends the completed outputs to the list-mode queue.
+Binned sinograms have already lost individual hit pairs and energies.
 
 Both exports contain `events`, `pose_deg`, `step_index` and `metadata_json`.
 The coordinates are already in the object frame, with XYZ aligned to the

@@ -1,0 +1,52 @@
+[
+  {
+    "id": "gravel",
+    "title": "Spatially-Variant Image-Based Modeling of PSF Deformations with Application to a Limited Angle Geometry from a Dual-Panel Breast-PET Imager",
+    "doi": "10.1088/1361-6560/ab4914",
+    "url": "https://doi.org/10.1088/1361-6560/ab4914",
+    "scope": "Author manuscript NIHMS1586178, abstract and introduction"
+  },
+  {
+    "id": "opengate",
+    "title": "OpenGATE",
+    "url": "https://raw.githubusercontent.com/OpenGATE/opengate/041e281dc4fc41e579c50b365b9b51d124e8aa8a/README.md",
+    "revision": "041e281dc4fc41e579c50b365b9b51d124e8aa8a",
+    "public_text": true
+  },
+  {
+    "id": "geant4",
+    "title": "Geant4",
+    "url": "https://raw.githubusercontent.com/Geant4/geant4/f3d5293d384757b8a228a099898b2b87cfa4023c/README.rst",
+    "revision": "f3d5293d384757b8a228a099898b2b87cfa4023c",
+    "public_text": true
+  },
+  {
+    "id": "parallelproj",
+    "title": "PARALLELPROJ - An open-source framework for fast calculation of projections in tomography",
+    "doi": "10.3389/fnume.2023.1324562",
+    "url": "https://raw.githubusercontent.com/KUL-recon-lab/parallelproj/04f9970595f15dc971805cc15c3c9ef9f628de44/README.md",
+    "revision": "04f9970595f15dc971805cc15c3c9ef9f628de44",
+    "public_text": true
+  },
+  {
+    "id": "yrt-pet",
+    "title": "YRT-PET",
+    "url": "https://raw.githubusercontent.com/YaleBioImaging/yrt-pet/bd569224367dec34e67286d549080a032c854fb4/README.md",
+    "revision": "bd569224367dec34e67286d549080a032c854fb4",
+    "public_text": true
+  },
+  {
+    "id": "stir",
+    "title": "STIR",
+    "url": "https://raw.githubusercontent.com/UCL/STIR/fe93e81616e79a544e0b9f99a262fae06450d744/README.md",
+    "revision": "fe93e81616e79a544e0b9f99a262fae06450d744",
+    "public_text": true
+  },
+  {
+    "id": "omega",
+    "title": "OMEGA",
+    "url": "https://raw.githubusercontent.com/villekf/OMEGA/72a3923bfba67c0eebd525ba561e07a6e6bf79d5/README.md",
+    "revision": "72a3923bfba67c0eebd525ba561e07a6e6bf79d5",
+    "public_text": true
+  }
+]

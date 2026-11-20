@@ -35,3 +35,6 @@ htmlcov/
 .idea/
 .DS_Store
 .~lock*#
+
+# Local research text and SQLite indexes
+research/physics_rag/.cache/
