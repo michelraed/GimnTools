@@ -7,11 +7,9 @@ def reconstruction_accelerator(backend):
         return None
     if name != "cuda":
         raise ValueError("Select the CPU or CUDA reconstruction backend")
-    try:
-        from Gimntools.GimnRec.cuda_reconstruction import CudaReconstruction
-    except ImportError as exc:
-        raise RuntimeError("CUDA support is unavailable. Install GimnTools[cuda] or select CPU") from exc
-    return CudaReconstruction()
+    from Gimntools.GimnRec.cuda_worker import CudaWorker
+
+    return CudaWorker()
 
 
 def sparse_product(matrix, values, accelerator=None, *, transpose=False):

@@ -1,5 +1,7 @@
 """Run the same comparisons on a CUDA device or with NUMBA_ENABLE_CUDASIM=1."""
 
+import sys
+
 import numpy as np
 import pytest
 
@@ -26,6 +28,34 @@ def test_backend_names_and_unavailable_cuda():
     if not cuda.is_available():
         with pytest.raises(RuntimeError, match="CUDA"):
             reconstruction_accelerator("cuda")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="This test delivers a POSIX signal")
+def test_native_cuda_failure_preserves_cpu_reconstruction(monkeypatch):
+    from Gimntools.GimnRec import cuda_worker
+
+    crash = """
+import os
+import pickle
+import resource
+import signal
+import sys
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+pickle.dump(("ok", None), sys.stdout.buffer)
+sys.stdout.buffer.flush()
+pickle.load(sys.stdin.buffer)
+os.kill(os.getpid(), signal.SIGSEGV)
+"""
+    monkeypatch.setattr(cuda_worker, "_WORKER_COMMAND", (sys.executable, "-X", "faulthandler", "-c", crash))
+    sino = np.ones((1, 5, 6))
+    angles = np.arange(6) * 30.
+    gpu = siddon_reconstructor(sino, fov_mm=5., backend="CUDA", verbose=False)
+    with pytest.raises(RuntimeError, match=r"CUDA worker stopped during sinogram ray tracing \(process status -11\)") as error:
+        gpu.mlem(angles, iterations=1, verbose=False)
+    assert "Fatal Python error: Segmentation fault" in str(error.value)
+    assert not gpu._accelerator.close.alive
+    cpu = siddon_reconstructor(sino, fov_mm=5., backend="CPU", verbose=False)
+    assert np.isfinite(cpu.mlem(angles, iterations=1, verbose=False)).all()
 
 
 def test_cuda_siddon_fbp_mlem_and_osem_match_cpu(accelerator):

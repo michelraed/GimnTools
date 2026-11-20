@@ -15,6 +15,11 @@ produto há transferência do vetor de entrada e de saída. Para lotes
 grandes ou suporte esparso, a escolha mais rápida depende do custo de
 transferência e da VRAM disponível.
 
+As chamadas CUDA executam em um processo separado. Se o runtime encerrar
+esse processo durante a reconstrução, a interface exibe a etapa afetada e
+permite repetir a aquisição em CPU. O diagnóstico nativo é registrado no
+log da interface e no terminal de onde ela foi aberta.
+
 ## Medições na nuvem
 
 Hardware Intel Xeon Platinum 8573C, Linux, quatro threads Numba,

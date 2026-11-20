@@ -56,6 +56,7 @@ try:
 except Exception:
     _ALL_CMAPS = ["gray", "hot", "viridis", "jet", "magma", "inferno", "plasma", "bone"]
 
+from Gimntools.GimnRec.cuda_worker import CudaWorkerError
 from Gimntools.GimnRec.data_loaders import generate_rsector_angle
 from Gimntools.GimnRec.detector_response import (
     CRYSTAL_MATERIALS, CRYSTAL_MU_511, DEFAULT_FACE_WIDTH_MM,
@@ -3612,6 +3613,10 @@ class ReconUI(tk.Tk):
         self._q.put(("log", msg))
 
     def error(self, msg):
+        if isinstance(msg, CudaWorkerError):
+            self.log(str(msg))
+            print(str(msg), file=sys.stderr)
+            msg = msg.args[0]
         self._q.put(("error", msg))
 
     def start_worker(self, operation, target, *args):
@@ -4095,6 +4100,10 @@ class ReconUI(tk.Tk):
                 self._q.put(('reconstruction_ready', (generation, rec, source, method)))
             self.log(f"[{nm}] reconstruction ready: {vol.shape}, "
                      f"voxel {dxy:.3f}×{dxy:.3f}×{dz:.3f} mm")
+        except CudaWorkerError as exc:
+            if sweep is not None:
+                raise
+            self.error(exc)
         except ValueError as exc:
             if sweep is not None:
                 raise
