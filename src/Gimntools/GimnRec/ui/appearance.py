@@ -54,7 +54,8 @@ class DesktopTypography:
 
     def _default_family(self):
         candidates = ("Inter", "Segoe UI", "Helvetica Neue", "Noto Sans", "Ubuntu",
-                      "DejaVu Sans", "Liberation Sans", "URW Gothic L", "Helvetica", "Arial")
+                      "DejaVu Sans", "Liberation Sans", "Nimbus Sans", "Nimbus Sans L",
+                      "Helvetica", "Arial", "URW Gothic L")
         for candidate in candidates:
             family = self.installed.get(candidate.casefold())
             if family:

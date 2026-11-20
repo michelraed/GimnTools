@@ -9,6 +9,8 @@ from scipy.spatial.transform import Rotation
 from scipy.stats import qmc
 
 from Gimntools.GimnRec.pseudo_simulator import _crystal_trace, detector_geometry
+from Gimntools.GimnRec.reconstruction_backend import sparse_product
+from Gimntools.GimnRec.physical_response import pair_codes as detector_pair_codes, read_physical_pairs
 
 
 @dataclass(frozen=True)
@@ -66,15 +68,9 @@ def _crystal_centers(geometry):
 
 
 def _detector_channels(geometry, crystals):
-    left, right = np.triu_indices(len(geometry.heads), k=1)
     crystals_per_head = len(crystals)
-    sub = np.arange(crystals_per_head)
-    first = (left[:, None] * crystals_per_head + sub).ravel()
-    second = (right[:, None] * crystals_per_head + sub).ravel()
-    limit = len(geometry.heads) * crystals_per_head
-    codes = (first.reshape(-1, crystals_per_head, 1) * limit
-             + second.reshape(-1, 1, crystals_per_head)).ravel()
-    return np.sort(codes), limit
+    heads = len(geometry.heads)
+    return detector_pair_codes(heads, crystals_per_head), heads * crystals_per_head
 
 
 def _head_readout(points, geometry, rotation):
@@ -162,11 +158,13 @@ def _sample_pairs(codes, total_channels, crystals, geometry, translations, unit)
 
 
 def prepare_listmode_response(rays, shape, spacing, center, acquisition, *, detector_radius_mm=None,
-                              progress=None):
+                              progress=None, accelerator=None, physical_lut=None, describe=False,
+                              energy_window=None):
     """Prepare the finite-pair projector and sensitivity for the requested voxel grid."""
     from Gimntools.GimnRec.listmode import _ray_matrix, _volume_grid
 
     grid_shape, spacing, _, corner = _volume_grid(shape, spacing, center)
+    trace = _ray_matrix if accelerator is None else accelerator.trace_lors
     info = acquisition.metadata
     from_root = info["source"] == "root coincidences"
     petsys = from_root and info["format"] == "PETSYS"
@@ -220,6 +218,34 @@ def prepare_listmode_response(rays, shape, spacing, center, acquisition, *, dete
     # correspondingly translated crystal volumes in the scanner frame.
     local_shifts = np.column_stack((np.zeros(len(offsets)), offsets @ geometry.grid))
     translations = np.einsum("nij,nj->ni", geometry.heads, local_shifts)
+    if physical_lut is not None or describe:
+        if not readout:
+            raise ValueError("A physical pair response requires archived detector crystal readouts")
+        # Canonical angle order makes a map reusable when the same poses
+        # were encountered in a different order in two ROOT files.
+        calibration_order = np.argsort(np.argsort(pose_degrees, kind="stable"), kind="stable")
+        bounds = [config.get("e_min"), config.get("e_max")]
+        if energy_window is not None:
+            low, high = energy_window
+            bounds = [max(low, bounds[0]) if bounds[0] is not None else low,
+                      min(high, bounds[1]) if bounds[1] is not None else high]
+        spec = {
+            "image_grid": {"shape_zyx": grid_shape[::-1].tolist(), "spacing_xyz_mm": spacing.tolist(),
+                           "center_xyz_mm": np.asarray(center, dtype=float).tolist()},
+            "rotation_axis": geometry.axis,
+            "object_axes": ["xyz"[a] for a in geometry.axes],
+            "pose_degrees": np.sort(pose_degrees).tolist(),
+            "detector": {"heads": list(geometry.names), "angles_deg": geometry.angles.tolist(),
+                         "head_rotations": geometry.heads.tolist(), "grid_to_head": geometry.grid.tolist(),
+                         "alignment_uv_mm": offsets.round(5).tolist(),
+                         "translations_xyz_mm": translations.round(5).tolist(),
+                         "pixels": geometry.pixels.tolist(), "pitch_mm": geometry.pitch.tolist(),
+                         "face_mm": geometry.face, "lower_mm": geometry.lower.tolist(),
+                         "upper_mm": geometry.upper.tolist(), "material": config.get("crystal_material", "LYSO"),
+                         "energy_window_kev": bounds},
+        }
+        if describe:
+            return spec
     if readout:
         observed = np.empty(len(rays), dtype=np.int64)
         for step, rotation in enumerate(rotations):
@@ -234,6 +260,24 @@ def prepare_listmode_response(rays, shape, spacing, center, acquisition, *, dete
                 raise ValueError("A crystal-pair coincidence must join two different mapped heads")
             observed[selected] = step * len(pair_codes) + ix
         observed, event_rows = np.unique(observed, return_inverse=True)
+    if physical_lut is not None:
+        calibrated = read_physical_pairs(physical_lut, spec)
+        operators = []
+        for pose, source_pose in enumerate(calibration_order):
+            base = pose * len(pair_codes)
+            first, last = np.searchsorted(observed, (base, base + len(pair_codes)))
+            if last > first:
+                matrix = calibrated.pose_matrix(source_pose)[observed[first:last] - base]
+                missing = np.count_nonzero(np.diff(matrix.indptr) == 0)
+                if missing:
+                    raise ValueError(f"Physical response is missing {missing} measured crystal pairs at "
+                                     f"pose {pose_degrees[pose]:g}°. Check calibration coverage and the FOV")
+                operators.append(matrix)
+        sensitivity = exposure @ calibrated.sensitivity_by_pose[calibration_order]
+        storage = sum(a.data.nbytes + a.indices.nbytes + a.indptr.nbytes for a in operators) + sensitivity.nbytes
+        details.update(physical_lut=str(physical_lut), calibration=calibrated.provenance, operator_bytes=storage)
+        return ListmodeResponse(sensitivity, tuple(operators), event_rows,
+                                "physical crystal-pair response", config, info.get("phantom"), details)
     collected = [[] for _ in rotations]
     sensitivity = np.zeros(int(grid_shape.prod()))
     # Independent, stratified detector-volume integration. The simulated
@@ -264,7 +308,7 @@ def prepare_listmode_response(rays, shape, spacing, center, acquisition, *, dete
             object_rays = np.column_stack((inverse.apply(a)[:, geometry.axes],
                                            inverse.apply(b)[:, geometry.axes]))
             if readout:
-                projection = reduce_rows @ _ray_matrix(object_rays, grid_shape, spacing, corner)
+                projection = reduce_rows @ trace(object_rays, grid_shape, spacing, corner)
                 sensitivity += exposure[pose] * np.asarray(projection.sum(axis=0)).ravel()
                 base = pose * len(pair_codes)
                 first, last = np.searchsorted(observed, (base + start, base + stop))
@@ -273,8 +317,9 @@ def prepare_listmode_response(rays, shape, spacing, center, acquisition, *, dete
             else:
                 for offset in range(0, len(object_rays), 4096):
                     block = slice(offset, offset + 4096)
-                    projection = _ray_matrix(object_rays[block], grid_shape, spacing, corner)
-                    sensitivity += exposure[pose] * (projection.T @ weight[block])
+                    projection = trace(object_rays[block], grid_shape, spacing, corner)
+                    sensitivity += exposure[pose] * sparse_product(projection, weight[block], accelerator,
+                                                                   transpose=True)
         if progress:
             progress(stop, len(pair_codes))
     if not sensitivity.any():

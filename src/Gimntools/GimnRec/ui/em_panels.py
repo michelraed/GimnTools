@@ -22,6 +22,7 @@ from Gimntools.GimnRec.iteration_history import IterationHistory
 from Gimntools.GimnRec.listmode import CALIBRATION_FIELDS, load_listmode, reconstruct_listmode
 from Gimntools.GimnRec.listmode_psf import prepare_listmode_psf
 from Gimntools.GimnRec.listmode_response import prepare_listmode_response
+from Gimntools.GimnRec.reconstruction_backend import reconstruction_accelerator
 from Gimntools.GimnRec.ui.rendering import plot_canvas
 from Gimntools.GimnRec.ui.selection import BatchSelection
 from Gimntools.GimnRec.ui.session import SessionToolbar
@@ -50,16 +51,19 @@ def _numbers(value, length, convert, label):
 
 
 class ListmodePanel(ttk.Frame):
-    def __init__(self, parent, app):
+    def __init__(self, parent, app, scroll_column):
         super().__init__(parent, padding=12)
         self.app = app
         self.path = tk.StringVar(self)
+        self.batch_paths = ()
+        self.batch_selection = tk.StringVar(self)
         self.matrix = tk.StringVar(self, "75 75 31")
         self.voxel = tk.StringVar(self, "0.84 0.84 0.84")
         self.center = tk.StringVar(self, "0 0 0")
         self.energy_enabled = tk.BooleanVar(self, False)
         self.energy = tk.StringVar(self, "450 650")
         self.iterations = tk.IntVar(self, 5)
+        self.backend = tk.StringVar(self, "CPU")
         self.subsets = tk.IntVar(self, 1)
         self.relaxation = tk.DoubleVar(self, 0.8)
         self.ratio_cap = tk.DoubleVar(self, 1e6)
@@ -67,6 +71,9 @@ class ListmodePanel(ttk.Frame):
         self.archive_geometry = tk.BooleanVar(self, True)
         self.detector_radius = tk.StringVar(self)
         self.path.trace_add("write", lambda *_: self.detector_radius.set(""))
+        self.use_physical = tk.BooleanVar(self, False)
+        self.physical_lut = tk.StringVar(self)
+        self.physical_status = tk.StringVar(self)
         self.phantom_support = tk.BooleanVar(self, True)
         self.psf_mode = tk.StringVar(self, "Off")
         self.psf_fwhm = tk.StringVar(self, "1.0 1.2")
@@ -75,14 +82,26 @@ class ListmodePanel(ttk.Frame):
         self.result = tk.StringVar(self)
 
         ttk.Label(self, text="3D list-mode reconstruction", style="Emphasis.TLabel").pack(anchor="w", pady=(0, 8))
-        path_row = ttk.Frame(self)
+        input_panel = ttk.LabelFrame(self, text="Acquisition", padding=(10, 6))
+        input_panel.pack(fill=tk.X, pady=(0, 10))
+        path_row = ttk.Frame(input_panel)
         path_row.pack(fill=tk.X)
         ttk.Label(path_row, text="Coincidences NPZ").pack(side=tk.LEFT, padx=(0, 8))
         ttk.Entry(path_row, textvariable=self.path).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(path_row, text="Browse...", command=self._browse).pack(side=tk.LEFT, padx=4)
-        ttk.Label(self, text="x1, y1, z1, E1, x2, y2, z2, E2 · millimetres and keV",
-                  style="Hint.TLabel").pack(anchor="w", pady=(2, 8))
-        settings = ttk.Frame(self)
+        ttk.Button(path_row, text="Select NPZ batch...", command=self._browse_batch).pack(side=tk.LEFT)
+        ttk.Label(input_panel, text="x1, y1, z1, E1, x2, y2, z2, E2 · millimetres and keV",
+                  style="Hint.TLabel").pack(anchor="w", pady=(4, 0))
+        actions = ttk.Frame(self)
+        actions.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(actions, text="Reconstruct list mode", style="Primary.TButton",
+                   command=self._start).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Reconstruct batch...", command=self._start_batch).pack(side=tk.LEFT, padx=6)
+        ttk.Label(self, textvariable=self.result, wraplength=850, style="Hint.TLabel").pack(anchor="w", pady=(0, 6))
+        scroll = scroll_column(self, max_width=1500)
+        scroll.canvas.configure(background=ttk.Style(self).lookup("TFrame", "background"))
+        scroll.pack(fill=tk.BOTH, expand=True)
+        settings = ttk.Frame(scroll.body)
         settings.pack(anchor="nw", fill=tk.X)
         controls = ttk.LabelFrame(settings, text="Volume and EM settings", padding=8)
         controls.pack(side=tk.LEFT, anchor="n", ipadx=5)
@@ -92,11 +111,14 @@ class ListmodePanel(ttk.Frame):
         ttk.Checkbutton(controls, text="Filter both energies", variable=self.energy_enabled).pack(anchor="w")
         _field(controls, "Energy low high (keV)", self.energy)
         _field(controls, "Iterations", self.iterations)
+        _field(controls, "Backend", self.backend, ("CPU", "CUDA"))
         _field(controls, "Subsets (1 = MLEM)", self.subsets)
         _field(controls, "EM relaxation", self.relaxation)
         _field(controls, "EM ratio cap", self.ratio_cap)
-        response = ttk.LabelFrame(settings, text="Detector response and support", padding=8)
-        response.pack(side=tk.LEFT, anchor="n", padx=(12, 0), fill=tk.X, expand=True)
+        right = ttk.Frame(settings)
+        right.pack(side=tk.LEFT, anchor="n", padx=(12, 0), fill=tk.X, expand=True)
+        response = self.response_panel = ttk.LabelFrame(right, text="Detector response and support", padding=8)
+        response.pack(fill=tk.X)
         ttk.Checkbutton(response, text="Use detector geometry saved in NPZ",
                         variable=self.archive_geometry).pack(anchor="w")
         _field(response, "PETSYS radius override (mm, optional)", self.detector_radius)
@@ -109,18 +131,40 @@ class ListmodePanel(ttk.Frame):
         self.growth_field = _field(response, "Peripheral FWHM increase (%)", self.psf_growth)
         row = ttk.Frame(response)
         row.pack(fill=tk.X, pady=2)
-        self.lut_button = ttk.Button(row, text="Browse LUT…", command=self._browse_lut)
+        self.lut_button = ttk.Button(row, text="Browse LUT...", command=self._browse_lut)
         self.lut_button.pack(side=tk.LEFT, padx=(0, 4))
         self.lut_field = ttk.Entry(row, textvariable=self.psf_lut)
         self.lut_field.pack(side=tk.LEFT, fill=tk.X, expand=True)
         model.bind("<<ComboboxSelected>>", lambda _event: self.sync_response_fields())
         self.sync_response_fields()
-        ttk.Label(self, text="Simulated archives and segmented PETSYS/GATE readouts use their saved geometry. "
-                  "For direct endpoint projection, clear the detector geometry option.",
-                  wraplength=600, style="Hint.TLabel").pack(anchor="w", pady=9)
-        ttk.Button(self, text="Reconstruct list mode", style="Primary.TButton",
-                   command=self._start).pack(anchor="w")
-        ttk.Label(self, textvariable=self.result, wraplength=670).pack(anchor="w", pady=10)
+        physics = ttk.LabelFrame(right, text="Calibrated detector response", padding=8)
+        physics.pack(fill=tk.X, pady=(9, 0))
+        physical_row = ttk.Frame(physics)
+        physical_row.pack(fill=tk.X)
+        ttk.Checkbutton(physical_row, text="Use physical crystal-pair matrix",
+                        variable=self.use_physical).pack(side=tk.LEFT)
+        ttk.Entry(physical_row, textvariable=self.physical_lut).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        ttk.Button(physical_row, text="Choose matrix...", command=self._browse_physical).pack(side=tk.LEFT)
+        ttk.Label(physics, textvariable=self.physical_status, style="Hint.TLabel",
+                  wraplength=490).pack(anchor="w", fill=tk.X, pady=(4, 0))
+        for field in (self.path, self.physical_lut, self.use_physical):
+            field.trace_add("write", self._update_physical_status)
+        self._update_physical_status()
+        self.queue_panel = ttk.LabelFrame(right, text="Batch acquisitions", padding=8)
+        summary = ttk.Frame(self.queue_panel)
+        summary.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(summary, textvariable=self.batch_selection, style="Hint.TLabel").pack(side=tk.LEFT)
+        ttk.Button(summary, text="Clear batch", command=lambda: self.set_batch(())).pack(side=tk.RIGHT)
+        self.jobs = ttk.Treeview(self.queue_panel, columns=("file", "state"), show="headings", height=3)
+        self.jobs.heading("file", text="Acquisition")
+        self.jobs.heading("state", text="Status")
+        self.jobs.column("file", width=345)
+        self.jobs.column("state", width=150, stretch=False, anchor="center")
+        scrollbar = ttk.Scrollbar(self.queue_panel, orient=tk.VERTICAL, command=self.jobs.yview)
+        self.jobs.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.jobs.pack(fill=tk.BOTH, expand=True)
+        self.jobs.bind("<<TreeviewSelect>>", self._focus_batch_file)
 
     def sync_response_fields(self):
         mode = self.psf_mode.get()
@@ -135,6 +179,34 @@ class ListmodePanel(ttk.Frame):
         if path:
             self.psf_lut.set(path)
 
+    def _browse_physical(self):
+        path = self.app.session.choose("listmode.physical.open", filedialog.askopenfilename, parent=self,
+                                       filetypes=[("Physical crystal-pair matrix", "*.npz")])
+        if path:
+            self.physical_lut.set(path)
+            self.use_physical.set(True)
+
+    def _update_physical_status(self, *_):
+        path, explicit = self.path.get().strip(), self.physical_lut.get().strip()
+        candidate = Path(path).with_suffix(".physical.npz") if path and Path(path).name else None
+        if explicit:
+            status = f"Selected matrix · {Path(explicit).name}"
+        elif candidate and candidate.is_file():
+            status = f"Companion matrix found · {candidate.name}"
+        else:
+            status = "Choose a calibrated matrix or place a matching .physical.npz next to each acquisition."
+        if explicit or (candidate and candidate.is_file()):
+            status += " · Compatibility checked during preparation" if self.use_physical.get() else " · Optional"
+        self.physical_status.set(status)
+
+    @staticmethod
+    def _resolve_physical(path, options):
+        if options.get("physical_lut") == "auto":
+            candidate = path.with_suffix(".physical.npz")
+            if not candidate.is_file():
+                raise ValueError(f"Choose a physical matrix or put {candidate.name} next to the acquisition")
+            options["physical_lut"] = candidate
+
     def _browse(self):
         path = self.app.session.choose(
             "listmode.open", filedialog.askopenfilename, parent=self, filetypes=[("List-mode NPZ", "*.npz")],
@@ -142,6 +214,37 @@ class ListmodePanel(ttk.Frame):
         if path:
             self.path.set(path)
             self.app.convergence_panel.refresh()
+
+    def set_batch(self, paths):
+        self.batch_paths = tuple(dict.fromkeys(Path(path).resolve() for path in paths))
+        self.app.session.remember("listmode.batch_paths", [str(path) for path in self.batch_paths])
+        self.batch_selection.set(f"{len(self.batch_paths)} NPZ selected for batch reconstruction")
+        self.jobs.delete(*self.jobs.get_children())
+        for path in self.batch_paths:
+            self.jobs.insert("", "end", iid=str(path), values=(path.name, "Ready"))
+        if self.batch_paths:
+            self.queue_panel.pack(fill=tk.X, pady=(0, 9), before=self.response_panel)
+        else:
+            self.queue_panel.pack_forget()
+        if self.batch_paths and (not self.path.get() or Path(self.path.get()).resolve() not in self.batch_paths):
+            self.path.set(str(self.batch_paths[0]))
+            self.app.convergence_panel.refresh()
+
+    def _focus_batch_file(self, _event):
+        selected = self.jobs.selection()
+        if selected and self.path.get() != selected[0]:
+            self.path.set(selected[0])
+            self.app.convergence_panel.refresh()
+
+    def batch_status(self, path, state):
+        if self.jobs.exists(path):
+            self.jobs.set(path, "state", state)
+
+    def _browse_batch(self):
+        paths = self.app.session.choose("listmode.open", filedialog.askopenfilenames, parent=self,
+                                       title="Select list-mode acquisitions", filetypes=[("List-mode NPZ", "*.npz")])
+        if paths:
+            self.set_batch(paths)
 
     def settings(self):
         path = self.path.get().strip()
@@ -162,62 +265,106 @@ class ListmodePanel(ttk.Frame):
             psf = dict(lut=lut)
         floor = self.sensitivity_floor.get().strip()
         radius = self.detector_radius.get().strip()
+        physical = (self.physical_lut.get().strip() or "auto") if self.use_physical.get() else None
         return Path(path), shape, spacing, energy, dict(center=center, relaxation=self.relaxation.get(),
             ratio_cap=self.ratio_cap.get(), sensitivity_floor=float(floor) / 100. if floor else None,
             restrict_to_phantom="auto" if self.phantom_support.get() else False, psf=psf,
             detector_radius_mm=float(radius) if radius and self.archive_geometry.get() else None,
-            use_detector_geometry=self.archive_geometry.get())
+            use_detector_geometry=self.archive_geometry.get(), backend=self.backend.get(), physical_lut=physical,
+            energy_window=energy)
 
     def _start(self):
+        self._start_reconstructions()
+
+    def _start_batch(self):
+        if not self.batch_paths:
+            self._browse_batch()
+        if self.batch_paths:
+            self._start_reconstructions(self.batch_paths)
+
+    def _start_reconstructions(self, paths=None):
         try:
-            path, shape, spacing, energy, options = self.settings()
+            selected, shape, spacing, energy, options = self.settings()
             iterations, subsets = self.iterations.get(), self.subsets.get()
             use_geometry = options.pop("use_detector_geometry")
         except (ValueError, tk.TclError) as exc:
             self.app.error(str(exc))
             return
 
-        def run():
-            try:
-                rays, metadata = load_listmode(path, energy, use_detector_geometry=use_geometry)
-                calibration = {k: metadata.pop(k) for k in CALIBRATION_FIELDS}
-                reported = 0
+        batch = paths is not None
+        paths = paths if batch else (selected,)
+        selected = selected.resolve()
 
-                def model_progress(done, total):
-                    nonlocal reported
-                    milestone = done * 4 // total
-                    if milestone > reported:
-                        reported = milestone
-                        self.app.log(f"[List mode] Scanner response · {done:,}/{total:,} detector pairs")
+        def reconstruct(path):
+            rays, metadata = load_listmode(path, energy, use_detector_geometry=use_geometry)
+            calibration = {k: metadata.pop(k) for k in CALIBRATION_FIELDS}
+            file_options = dict(options)
+            if path.resolve() != selected:
+                file_options["detector_radius_mm"] = None
+            self._resolve_physical(path, file_options)
+            reported = 0
 
-                volume, geometry = reconstruct_listmode(
-                    rays, shape, spacing, iterations=iterations, subsets=subsets,
-                    model_progress=model_progress,
-                    progress=lambda it: self.app.log(f"[List mode] {path.stem} · iteration {it}/{iterations}"),
-                    **options, **calibration)
-                geometry.update(metadata)
-                method = "LM-MLEM" if subsets == 1 else "LM-OSEM"
-                info = (f"{path.stem} · {method} · {geometry['traced_events']:,} of "
-                        f"{geometry['total_events']:,} coincidences traced · {geometry['sensitivity']}")
-                if geometry["sv_psf"]:
-                    info += f" · {geometry['sv_psf']}"
-                if geometry["sensitivity_floor"]:
-                    info += f" · sensitivity ≥ {100 * geometry['sensitivity_floor']:g}%"
-                if geometry["phantom_support"]:
-                    info += " · phantom cylinder support"
-                model = geometry["detector_model"]
-                if model and model.get("alignment"):
+            def model_progress(done, total):
+                nonlocal reported
+                milestone = done * 4 // total
+                if milestone > reported:
+                    reported = milestone
+                    self.app.log(f"[List mode] {path.stem} · {done:,}/{total:,} detector pairs")
+
+            volume, geometry = reconstruct_listmode(
+                rays, shape, spacing, iterations=iterations, subsets=subsets,
+                model_progress=model_progress,
+                progress=lambda it: self.app.log(f"[List mode] {path.stem} · iteration {it}/{iterations}"),
+                **file_options, **calibration)
+            geometry.update(metadata)
+            method = "LM-MLEM" if subsets == 1 else "LM-OSEM"
+            info = (f"{path.stem} · {method} · {geometry['backend'].upper()} · {geometry['traced_events']:,} of "
+                    f"{geometry['total_events']:,} coincidences traced · {geometry['sensitivity']}")
+            if geometry["sv_psf"]:
+                info += f" · {geometry['sv_psf']}"
+            if geometry["sensitivity_floor"]:
+                info += f" · sensitivity ≥ {100 * geometry['sensitivity_floor']:g}%"
+            if geometry["phantom_support"]:
+                info += " · phantom cylinder support"
+            model = geometry["detector_model"]
+            if model:
+                info += f" · {model['positions']} poses"
+                if model.get("alignment"):
                     info += f" · radius {model['detector_radius_mm']:g} mm · {model['exposure']} pose exposure"
-                entry = {"name": f"{path.stem}_{method.lower()}", "source": path.stem, "method": method,
-                         "volume": volume, "spacing": spacing, "origin": geometry["origin"],
-                         "geometry": geometry, "info": info}
-                self.app._q.put(("listmode_ready", entry))
-                self.app.log(info)
-            except Exception as exc:
-                self.app.error(f"{path.name}: {exc}")
+                if "operator_bytes" in model:
+                    info += f" · cached operator {model['operator_bytes'] / 1024**2:.1f} MiB"
+            info += f" · prep {geometry['preparation_s']:.1f} s · reconstruction {geometry['reconstruction_s']:.1f} s"
+            entry = {"name": f"{path.stem}_{method.lower()}", "source": path.stem, "method": method,
+                     "volume": volume, "spacing": spacing, "origin": geometry["origin"],
+                     "geometry": geometry, "info": info}
+            self.app._q.put(("listmode_ready", entry))
+            self.app.log(info)
 
+        def run():
+            done = 0
+            for path in paths:
+                if batch:
+                    self.app._q.put(("listmode_batch_status", (str(path), "Running")))
+                try:
+                    reconstruct(path)
+                except Exception as exc:
+                    if batch:
+                        self.app.log(f"[List mode] {path.name}: {exc}")
+                        self.app._q.put(("listmode_batch_status", (str(path), "Failed")))
+                    else:
+                        self.app.error(f"{path.name}: {exc}")
+                else:
+                    done += 1
+                    if batch:
+                        self.app._q.put(("listmode_batch_status", (str(path), "Complete")))
+            if batch:
+                summary = f"{done}/{len(paths)} list-mode acquisitions reconstructed"
+                self.app._q.put(("listmode_batch_done", summary))
+                self.app.log(f"[List mode] {summary}")
+
+        status = f"Reconstructing {len(paths)} list-mode acquisitions..." if batch else f"Reconstructing {selected.name}..."
         if self.app.start_worker("list-mode reconstruction", run):
-            self.result.set(f"Reconstructing {path.name}...")
+            self.result.set(status)
 
 
 class ConvergencePanel(ttk.Frame):
@@ -490,6 +637,7 @@ class ConvergencePanel(ttk.Frame):
         settings = settings.copy()
         rays, meta = load_listmode(path, energy, use_detector_geometry=settings.pop("use_detector_geometry", True))
         calibration = {k: meta[k] for k in CALIBRATION_FIELDS}
+        ListmodePanel._resolve_physical(path, settings)
 
         def run(iterations, subsets, callback=None, *, update_callback=None):
             def visit(iteration, volume):
@@ -506,9 +654,14 @@ class ConvergencePanel(ttk.Frame):
             )
 
         if calibration["detector_model"] is not None:
+            physical_lut = settings.pop("physical_lut", None)
+            if physical_lut and any(calibration[key] is not None for key in ("sensitivity", "normalization_lors")):
+                raise ValueError("A physical response provides its own sensitivity; remove the separate normalization")
             calibration["detector_model"] = prepare_listmode_response(
                 rays, shape, spacing, settings["center"], calibration["detector_model"],
                 detector_radius_mm=settings.pop("detector_radius_mm", None),
+                accelerator=reconstruction_accelerator(settings.get("backend", "cpu")),
+                physical_lut=physical_lut, energy_window=energy,
             )
         if settings.get("psf"):
             response = calibration["detector_model"]

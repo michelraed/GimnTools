@@ -1,5 +1,6 @@
 from Gimntools.GimnRec.projectors import siddon_forward_2d,siddon_backward_2d
 from Gimntools.GimnRec.filters import ramLak, convolve_sino_1d, apply_filter_to_sinogram
+from Gimntools.GimnRec.reconstruction_backend import reconstruction_accelerator
 from math import ceil
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d, gaussian_filter
@@ -309,7 +310,7 @@ class siddon_reconstructor:
     def __init__(self, sinogram_3d, fov_mm=None, sino_range_mm=None,
                  n_img=None, voxel_mm=None, rays_per_bin="auto",
                  backproject_chunks=1, cor_mm=0.0, verbose=True,
-                 dx_cor_mm=0.0, dy_cor_mm=0.0):
+                 dx_cor_mm=0.0, dy_cor_mm=0.0, backend="cpu"):
         data = np.asarray(sinogram_3d, dtype=np.float64)
         if data.ndim != 3 or any(d < 1 for d in data.shape):
             raise ValueError("sinogram_3d must be nonempty (slices, radial, angle)")
@@ -317,6 +318,8 @@ class siddon_reconstructor:
             raise ValueError("sinogram_3d contains NaN or infinity")
         self.sinogram = data.copy()
         self.n_slices, self.n_dist, self.n_ang = data.shape
+        self._accelerator = reconstruction_accelerator(backend)
+        self._parallel_gpu = {}
 
         # --- image grid: any two of (fov, n_img, voxel) ---
         self.fov_mm, self.n_img, self.img_pixel = resolve_image_grid(
@@ -434,6 +437,7 @@ class siddon_reconstructor:
             "cor_bins": self.cor_mm / self.sino_pixel,
             "dx_cor_mm": self.dx_cor_mm,
             "dy_cor_mm": self.dy_cor_mm,
+            "backend": "cuda" if self._accelerator is not None else "cpu",
         }
 
     def _distances_for_angles(self, angles_rad):
@@ -449,6 +453,17 @@ class siddon_reconstructor:
                         self.dy_cor_mm * np.sin(angles_rad))
         return np.ascontiguousarray(self.distances[:, None] - displacement[None, :])
 
+    def _cuda_projector(self, angles_rad, distances):
+        key = (np.asarray(angles_rad).tobytes(), distances.shape, distances.tobytes(),
+               self.n_img, self.img_pixel, self.img_min, self.sino_pixel, self.rays_per_bin)
+        matrix = self._parallel_gpu.get(key)
+        if matrix is None:
+            matrix = self._accelerator.trace_parallel(
+                angles_rad, distances, self.n_img, self.img_pixel, self.img_min,
+                self.sino_pixel, self.rays_per_bin)
+            self._parallel_gpu[key] = matrix
+        return matrix
+
     def _project(self, img, angles_rad, psf_kernel=None):
         """Forward operator  y = C . A . x.
 
@@ -458,10 +473,13 @@ class siddon_reconstructor:
         MODEL — it must not be confused with the inter-iteration Gaussian
         regularization applied to the image estimate (see ``mlem``/``osem``).
         """
-        sino = siddon_forward_2d(np.ascontiguousarray(img), angles_rad,
-                                  self._distances_for_angles(angles_rad), self.n_img,
-                                  self.img_pixel, self.img_min,
-                                  self.sino_pixel, self.rays_per_bin)
+        distances = self._distances_for_angles(angles_rad)
+        if self._accelerator is None:
+            sino = siddon_forward_2d(np.ascontiguousarray(img), angles_rad, distances, self.n_img,
+                                     self.img_pixel, self.img_min, self.sino_pixel, self.rays_per_bin)
+        else:
+            matrix = self._cuda_projector(angles_rad, distances)
+            sino = self._accelerator.sparse_product(matrix, img.ravel()).reshape(self.n_dist, len(angles_rad))
         if psf_kernel is not None:
             sino = convolve_sino_1d(sino, psf_kernel, adjoint=False)
         return sino
@@ -478,8 +496,13 @@ class siddon_reconstructor:
         """
         if psf_kernel is not None:
             sino = convolve_sino_1d(sino, psf_kernel, adjoint=True)
+        distances = self._distances_for_angles(angles_rad)
+        if self._accelerator is not None:
+            matrix = self._cuda_projector(angles_rad, distances)
+            flat = np.where(np.abs(sino) < 1e-15, 0., sino).ravel()
+            return self._accelerator.sparse_product(matrix, flat, transpose=True).reshape(self.n_img, self.n_img)
         return siddon_backward_2d(np.ascontiguousarray(sino), angles_rad,
-                                   self._distances_for_angles(angles_rad), self.n_img,
+                                   distances, self.n_img,
                                    self.img_pixel, self.img_min,
                                    self.sino_pixel, self.rays_per_bin,
                                    self.backproject_chunks)

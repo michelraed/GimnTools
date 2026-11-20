@@ -15,6 +15,7 @@ from scipy.special import roots_legendre
 
 from Gimntools.GimnRec.doi import first_interaction_quadrature
 from Gimntools.GimnRec.projectors import _siddon_trace
+from Gimntools.GimnRec.reconstruction_backend import sparse_product
 
 
 @dataclass(frozen=True)
@@ -741,27 +742,26 @@ class DetectorResponse:
             matrix = matrix[rows.ravel()]
         image_shape = (r.n_img, r.n_img)
         sino_shape = (r.n_dist, angles.size)
-        transpose = matrix.T if matrix is not None else None
-        sv_transpose = self.sv.T if self.sv is not None else None
+        accelerator = getattr(r, "_accelerator", None)
         factors = self.reference_factors
         if factors is not None and indices is not None:
             factors = factors[:, indices]
 
         def forward(image):
             if self.sv is not None:
-                image = (self.sv @ image.ravel()).reshape(image_shape)
+                image = sparse_product(self.sv, image.ravel(), accelerator).reshape(image_shape)
             if matrix is None:
                 projection = r._project(image, angles)
                 return projection if factors is None else projection * factors
-            return (matrix @ image.ravel()).reshape(sino_shape)
+            return sparse_product(matrix, image.ravel(), accelerator).reshape(sino_shape)
 
         def backward(sino):
-            if transpose is None:
+            if matrix is None:
                 image = r._backproject(sino if factors is None else sino * factors, angles)
             else:
-                image = (transpose @ sino.ravel()).reshape(image_shape)
-            if sv_transpose is not None:
-                image = (sv_transpose @ image.ravel()).reshape(image_shape)
+                image = sparse_product(matrix, sino.ravel(), accelerator, transpose=True).reshape(image_shape)
+            if self.sv is not None:
+                image = sparse_product(self.sv, image.ravel(), accelerator, transpose=True).reshape(image_shape)
             return image
 
         return forward, backward

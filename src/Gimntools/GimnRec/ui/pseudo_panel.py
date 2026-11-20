@@ -20,6 +20,7 @@ class PseudoSimulatorPanel(ttk.Frame):
         super().__init__(parent, padding=10)
         self.app = app
         self.last_output = None
+        self.last_outputs = ()
         self.phantom_type = tk.StringVar(self, "Derenzo")
         self.diameter = tk.DoubleVar(self, 24.)
         self.height = tk.DoubleVar(self, 20.)
@@ -41,6 +42,8 @@ class PseudoSimulatorPanel(ttk.Frame):
         self.root_format = tk.StringVar(self, "PETSYS")
         self.root_path = tk.StringVar(self)
         self.gate_unit = tk.StringVar(self, "MeV")
+        self.gate_angle_branch = tk.StringVar(self)
+        self.gate_angle_unit = tk.StringVar(self, "deg")
         self.gate_global = tk.BooleanVar(self, False)
         self.description = tk.StringVar(self)
         self.status = tk.StringVar(self)
@@ -105,7 +108,7 @@ class PseudoSimulatorPanel(ttk.Frame):
         ttk.Label(parent, text="Each step emits a new batch of back-to-back 511 keV pairs, then rotates "
                   "the source. The model includes crystal gaps and first interactions.",
                   style="Hint.TLabel", wraplength=570).pack(anchor=tk.W, pady=(0, 8))
-        ttk.Button(parent, text="Simulate and save NPZ…", style="Primary.TButton",
+        ttk.Button(parent, text="Simulate and save NPZ...", style="Primary.TButton",
                    command=self._simulate).pack(anchor=tk.W)
 
     def _build_root(self, parent):
@@ -115,16 +118,22 @@ class PseudoSimulatorPanel(ttk.Frame):
         row = ttk.Frame(controls)
         row.pack(fill=tk.X, pady=3)
         ttk.Entry(row, textvariable=self.root_path).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row, text="Browse…", command=self._browse_root).pack(side=tk.LEFT, padx=4)
+        ttk.Button(row, text="Browse...", command=self._browse_root).pack(side=tk.LEFT, padx=4)
         ttk.Button(row, text="Use ROOT from acquisition tab", command=self._use_current_root).pack(side=tk.LEFT)
         _field(controls, "GATE input energy unit", self.gate_unit, ("MeV", "keV"))
+        _field(controls, "GATE angle branch (blank = auto)", self.gate_angle_branch)
+        _field(controls, "GATE custom angle unit", self.gate_angle_unit, ("deg", "rad"))
         ttk.Checkbutton(controls, text="Export GATE global XYZ when using CrystalID",
                         variable=self.gate_global).pack(anchor=tk.W)
-        ttk.Label(parent, text="Export uses the geometry from the matching acquisition tab and the original "
-                  "coincidence tree. Binned sinograms have no individual hit coordinates or energies.",
+        ttk.Label(parent, text="Each ROOT supplies its own poses. In GATE files with run IDs alone, the "
+                  "configured run step converts IDs to angles.",
                   style="Hint.TLabel", wraplength=590).pack(anchor=tk.W, pady=8)
-        ttk.Button(parent, text="Export list-mode NPZ…", style="Primary.TButton",
-                   command=self._export).pack(anchor=tk.W)
+        actions = ttk.Frame(parent)
+        actions.pack(anchor=tk.W)
+        ttk.Button(actions, text="Export list-mode NPZ...", style="Primary.TButton",
+                   command=self._export).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Export multiple ROOTs...",
+                   command=self._export_batch).pack(side=tk.LEFT, padx=6)
 
     def phantom(self):
         kind = self.phantom_type.get()
@@ -229,41 +238,95 @@ class PseudoSimulatorPanel(ttk.Frame):
             source = Path(self.root_path.get().strip())
             if not source.is_file():
                 raise ValueError("Select the original coincidence ROOT file")
-            config, angles, mapping = self._detector_setup(self.root_format.get())
-            unit, global_hits = self.gate_unit.get(), self.gate_global.get()
+            export = self._root_exporter()
         except (ValueError, tk.TclError) as exc:
             self.app.error(str(exc))
             return
         if output := self._output(f"{source.stem}_listmode"):
-            def export(path):
-                return export_root_listmode(source, path, config, angles, mapping, gate_global_hits=global_hits,
-                                            gate_energy_unit=unit)
-            self._start(output, export)
+            self._start(output, partial(export, source))
+
+    def _root_exporter(self):
+        config, angles, mapping = self._detector_setup(self.root_format.get())
+        return partial(export_root_listmode, config=config, detector_angles=angles, mapping=mapping,
+                       gate_global_hits=self.gate_global.get(), gate_energy_unit=self.gate_unit.get(),
+                       gate_angle_branch=self.gate_angle_branch.get().strip() or None,
+                       gate_angle_unit=self.gate_angle_unit.get())
+
+    def _export_batch(self):
+        selected = self.app.session.choose("pseudo.root.open", filedialog.askopenfilenames, parent=self,
+                                           filetypes=[("Coincidence ROOT", "*.root")],
+                                           title=f"Select {self.root_format.get()} ROOT acquisitions")
+        if not selected:
+            return
+        try:
+            export = self._root_exporter()
+        except (ValueError, tk.TclError) as exc:
+            self.app.error(str(exc))
+            return
+        directory = self.app.session.choose("pseudo.listmode.save", filedialog.askdirectory, directory=True,
+                                            parent=self, mustexist=True, title="Choose the NPZ destination")
+        if not directory:
+            return
+        folder = Path(directory)
+        sources = tuple(dict.fromkeys(Path(path).resolve() for path in selected))
+
+        def jobs():
+            names = {path.stem for path in folder.iterdir() if path.suffix.lower() == ".npz"}
+            for source in sources:
+                name = self.app._unique_name(f"{source.stem}_listmode", names)
+                names.add(name)
+                yield str(folder / f"{name}.npz"), partial(export, source)
+
+        self._start_exports(jobs, len(sources), batch=True)
 
     def _start(self, output, action):
+        self._start_exports(lambda: ((output, action),), 1)
+
+    def _start_exports(self, jobs, total, *, batch=False):
         def run():
+            results = []
             try:
-                metadata = action(output)
-                self.app._q.put(("pseudo_complete", (output, metadata)))
+                for output, action in jobs():
+                    try:
+                        metadata = action(output)
+                    except Exception as exc:
+                        message = f"{Path(output).name}: {exc}"
+                        if batch:
+                            self.app.log(f"[List-mode export] {message}")
+                        else:
+                            self.app.error(message)
+                    else:
+                        results.append((output, metadata))
             except Exception as exc:
-                self.app._q.put(("pseudo_complete", None))
                 self.app.error(str(exc))
+            self.app._q.put(("pseudo_complete", (results, total, batch)))
 
         if self.app.start_worker("list-mode generation", run):
-            self.status.set("Generating list-mode NPZ…")
+            self.status.set(f"Generating {total} list-mode NPZ..." if batch else "Generating list-mode NPZ...")
 
     def complete(self, result):
-        if result is None:
+        outputs, total, batch = result
+        if not outputs and not batch:
             self.status.set("List-mode export could not be completed.")
             return
-        self.last_output, metadata = result
-        info = f"{Path(self.last_output).name} · {metadata['coincidences']:,} coincidences"
-        self.status.set(info)
-        self.app.log(f"[List-mode export] {info}")
-        self.use_button.configure(state="normal")
+        self.last_outputs = tuple(path for path, _ in outputs)
+        self.last_output = self.last_outputs[0] if self.last_outputs else None
+        for output, metadata in outputs:
+            info = (f"{Path(output).name} · {metadata['coincidences']:,} coincidences"
+                    f" · {len(metadata['poses'])} poses/runs")
+            self.app.log(f"[List-mode export] {info}")
+        status = f"{len(outputs)}/{total} list-mode NPZ exported" if batch else (
+            f"{Path(self.last_output).name} · {metadata['coincidences']:,} coincidences")
+        self.status.set(status)
+        if batch:
+            self.app.log(f"[List-mode export] {self.status.get()}")
+        self.use_button.configure(state="normal" if outputs else "disabled")
 
     def _use(self):
-        self.app.listmode_panel.path.set(self.last_output)
-        self.app.convergence_panel.refresh()
+        if len(self.last_outputs) > 1:
+            self.app.listmode_panel.set_batch(self.last_outputs)
+        else:
+            self.app.listmode_panel.path.set(self.last_output)
+            self.app.convergence_panel.refresh()
         self.app.notebook.select(self.app.recon_workspace)
         self.app.recon_workspace.select(self.app.listmode_panel)

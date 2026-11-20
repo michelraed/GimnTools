@@ -9,6 +9,7 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.sparse import coo_matrix, csr_matrix, vstack
 
 from Gimntools.GimnRec.detector_response import _axis
+from Gimntools.GimnRec.reconstruction_backend import sparse_product
 
 
 FWHM_TO_SIGMA = 1 / np.sqrt(8 * np.log(2))
@@ -21,20 +22,20 @@ class ListmodePSF:
     name: str
     planar: bool = False
 
-    def forward(self, values):
+    def forward(self, values, accelerator=None):
         if self.planar:
             plane = values.reshape(self.shape[0], -1).T
-            return (self.matrices[0] @ plane).T.ravel()
+            return sparse_product(self.matrices[0], plane, accelerator).T.ravel()
         for matrix in self.matrices:
-            values = matrix @ values
+            values = sparse_product(matrix, values, accelerator)
         return values
 
-    def transpose(self, values):
+    def transpose(self, values, accelerator=None):
         if self.planar:
             plane = values.reshape(self.shape[0], -1).T
-            return (self.matrices[0].T @ plane).T.ravel()
+            return sparse_product(self.matrices[0], plane, accelerator, transpose=True).T.ravel()
         for matrix in reversed(self.matrices):
-            values = matrix.T @ values
+            values = sparse_product(matrix, values, accelerator, transpose=True)
         return values
 
 

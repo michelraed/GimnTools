@@ -1,13 +1,17 @@
 """Three-dimensional list-mode EM from coincidence endpoints in millimetres."""
 
 import json
+import math
 from pathlib import Path
+from time import perf_counter
 from zipfile import BadZipFile
 
 import numpy as np
 from numba import get_num_threads, njit, prange, set_num_threads
 from scipy.sparse import csr_matrix
 from scipy.spatial.transform import Rotation
+
+from Gimntools.GimnRec.reconstruction_backend import reconstruction_accelerator, sparse_product
 
 
 EVENT_COLUMNS = ("x1", "y1", "z1", "E1", "x2", "y2", "z2", "E2")
@@ -100,37 +104,39 @@ def load_listmode(path, energy_window=None, *, use_detector_geometry=True):
 
 
 @njit(cache=True)
-def _trace_3d(ray, shape, spacing, corner, columns, lengths):
-    direction = ray[3:] - ray[:3]
+def _trace_3d_segments(ray, shape, spacing, corner, columns, lengths, index, step, next_at, stride):
     enter, exit_at = 0.0, 1.0
-    distance = np.sqrt(np.sum(direction * direction))
+    norm = 0.
+    for axis in range(3):
+        direction = ray[axis + 3] - ray[axis]
+        norm += direction * direction
+    distance = math.sqrt(norm)
     if not (0 < distance < np.inf):
         return 0
     for axis in range(3):
         lo = corner[axis]
         hi = lo + shape[axis] * spacing[axis]
-        p, d = ray[axis], direction[axis]
+        p, d = ray[axis], ray[axis + 3] - ray[axis]
         if d == 0.0:
             if p < lo or p >= hi:
                 return 0
         else:
             a, b = (lo - p) / d, (hi - p) / d
-            enter = max(enter, min(a, b))
-            exit_at = min(exit_at, max(a, b))
+            near, far = (a, b) if a <= b else (b, a)
+            enter = enter if enter >= near else near
+            exit_at = exit_at if exit_at <= far else far
     if enter >= exit_at:
         return 0
 
-    index = np.empty(3, dtype=np.int64)
-    step = np.zeros(3, dtype=np.int64)
-    next_at = np.full(3, np.inf)
-    stride = np.full(3, np.inf)
     for axis in range(3):
-        d = direction[axis]
+        d = ray[axis + 3] - ray[axis]
         pos = (ray[axis] + d * enter - corner[axis]) / spacing[axis]
-        nearest = np.rint(pos)
+        nearest = round(pos)
         if abs(pos - nearest) < 1e-10:
             pos = nearest
-        index[axis] = min(shape[axis] - 1, max(0, int(np.floor(pos)) - int(d < 0.0 and pos == nearest)))
+        cell = math.floor(pos) - int(d < 0.0 and pos == nearest)
+        index[axis] = 0 if cell < 0 else (shape[axis] - 1 if cell >= shape[axis] else cell)
+        step[axis], next_at[axis], stride[axis] = 0, np.inf, np.inf
         if d != 0.0:
             step[axis] = 1 if d > 0.0 else -1
             face = corner[axis] + (index[axis] + int(d > 0.0)) * spacing[axis]
@@ -140,7 +146,10 @@ def _trace_3d(ray, shape, spacing, corner, columns, lengths):
     n = 0
     t = enter
     while t < exit_at:
-        t1 = min(next_at[0], next_at[1], next_at[2], exit_at)
+        t1 = exit_at
+        for axis in range(3):
+            crossing = next_at[axis]
+            t1 = crossing if crossing < t1 else t1
         if t1 > t:
             columns[n] = (index[2] * shape[1] + index[1]) * shape[0] + index[0]
             lengths[n] = (t1 - t) * distance
@@ -155,6 +164,13 @@ def _trace_3d(ray, shape, spacing, corner, columns, lengths):
                     return n
         t = t1
     return n
+
+
+@njit(cache=True)
+def _trace_3d(ray, shape, spacing, corner, columns, lengths):
+    return _trace_3d_segments(ray, shape, spacing, corner, columns, lengths,
+                             np.empty(3, dtype=np.int64), np.empty(3, dtype=np.int64),
+                             np.empty(3), np.empty(3))
 
 
 @njit(cache=True, parallel=True)
@@ -221,7 +237,8 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
                          iterations=5, subsets=1, relaxation=0.8, ratio_cap=1e6,
                          sensitivity=None, normalization_lors=None, normalization_weights=None,
                          detector_model=None, psf=None, sensitivity_floor=None, restrict_to_phantom=False,
-                         detector_radius_mm=None,
+                         detector_radius_mm=None, physical_lut=None, energy_window=None,
+                         backend="cpu",
                          model_progress=None, cache_bytes=128 * 1024**2,
                          progress=None, checkpoint=None, update_callback=None):
     """Reconstruct a (z, y, x) volume with matched 3D Siddon operators.
@@ -231,6 +248,7 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
     voxel sensitivity or independent scanner normalization LORs. Otherwise
     the approximation is uniform sensitivity on illuminated voxels.
     """
+    started = perf_counter()
     rays = np.asarray(rays, dtype=float)
     shape_xyz, spacing, center, corner = _volume_grid(shape, spacing, center)
     if (rays.ndim != 2 or rays.shape[1] != 6 or not len(rays)
@@ -242,15 +260,21 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
         raise ValueError("Check iterations, subsets, EM relaxation and ratio cap")
 
     shape = tuple(shape_xyz[::-1])
+    accelerator = reconstruction_accelerator(backend)
+    trace = _ray_matrix if accelerator is None else accelerator.trace_lors
     num_voxels = int(np.prod(shape_xyz))
     block_size = min(8192, max(1, 2**20 // int(shape_xyz.sum())))
     order = np.random.default_rng(0).permutation(len(rays)) if subsets > 1 else None
     edges = np.linspace(0, len(rays), subsets + 1, dtype=int)
 
     def matrix(points):
-        return _ray_matrix(points, shape_xyz, spacing, corner)
+        return trace(points, shape_xyz, spacing, corner)
 
     response = None
+    if physical_lut is not None and detector_model is None:
+        raise ValueError("A physical response requires compatible crystal readout geometry saved in the event NPZ")
+    if physical_lut is not None and (sensitivity is not None or normalization_lors is not None):
+        raise ValueError("A physical response provides its own sensitivity; remove the separate normalization")
     if detector_radius_mm is not None and detector_model is None:
         raise ValueError("The detector radius override requires a segmented PETSYS acquisition NPZ")
     if detector_model is not None:
@@ -258,7 +282,7 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
 
         response = detector_model if isinstance(detector_model, ListmodeResponse) else prepare_listmode_response(
             rays, shape, spacing, center, detector_model, detector_radius_mm=detector_radius_mm,
-            progress=model_progress,
+            progress=model_progress, accelerator=accelerator, physical_lut=physical_lut, energy_window=energy_window,
         )
     if psf is not None:
         from Gimntools.GimnRec.listmode_psf import ListmodePSF, prepare_listmode_psf
@@ -285,7 +309,8 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
         sensitivity = np.zeros(num_voxels)
         for start in range(0, len(reference), block_size):
             stop = start + block_size
-            sensitivity += matrix(reference[start:stop]).T @ weights[start:stop]
+            sensitivity += sparse_product(matrix(reference[start:stop]), weights[start:stop], accelerator,
+                                          transpose=True)
         sensitivity_model = "independent normalization LORs"
     elif response is not None:
         sensitivity = response.sensitivity
@@ -338,8 +363,8 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
     elif not modeled_sensitivity and np.any(sensitivity[support] == 0):
         raise ValueError("Normalization has zero exposure in voxels crossed by measured LORs")
     if psf is not None:
-        support = psf.transpose(support.astype(float)) > 0
-        sensitivity = psf.transpose(sensitivity)
+        support = psf.transpose(support.astype(float), accelerator) > 0
+        sensitivity = psf.transpose(sensitivity, accelerator)
     support &= (sensitivity > 0) & (sensitivity >= floor * sensitivity.max())
     if restrict_to_phantom == "auto":
         restrict_to_phantom = bool(response and response.phantom)
@@ -350,27 +375,28 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
     if floor or restrict_to_phantom:
         illuminated = support.astype(float)
         if psf is not None:
-            illuminated = psf.forward(illuminated)
+            illuminated = psf.forward(illuminated, accelerator)
         for sub, (first, last) in enumerate(zip(edges[:-1], edges[1:])):
-            traced[sub] = sum(int(np.sum(np.where(a @ illuminated > 0, observed, 0)))
+            traced[sub] = sum(int(np.sum(np.where(sparse_product(a, illuminated, accelerator) > 0, observed, 0)))
                               for a, observed in blocks(sub, first, last))
         if not traced.all():
             raise ValueError("At least one subset misses the active reconstruction support")
     x = np.zeros(num_voxels)
     x[support] = traced.sum() / sensitivity[support].sum()
+    ready = perf_counter()
 
     for it in range(1, iterations + 1):
         for sub, (first, last) in enumerate(zip(edges[:-1], edges[1:])):
             correction = np.zeros(num_voxels)
-            blurred = psf.forward(x) if psf is not None else x
+            blurred = psf.forward(x, accelerator) if psf is not None else x
             for a, observed in blocks(sub, first, last):
-                predicted = a @ blurred
+                predicted = sparse_product(a, blurred, accelerator)
                 ratio = np.divide(1., predicted, out=np.zeros_like(predicted), where=predicted > 0)
                 np.minimum(ratio, ratio_cap, out=ratio)
                 ratio *= observed
-                correction += a.T @ ratio
+                correction += sparse_product(a, ratio, accelerator, transpose=True)
             if psf is not None:
-                correction = psf.transpose(correction)
+                correction = psf.transpose(correction, accelerator)
             exposure = (last - first) / len(rays)
             update = correction[support] / (sensitivity[support] * exposure)
             x[support] *= 1 + relaxation * (update - 1)
@@ -382,6 +408,8 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
             progress(it)
     geometry = {"origin": tuple(corner + spacing / 2),
                 "spacing": tuple(spacing), "center": tuple(center),
+                "backend": "cuda" if accelerator is not None else "cpu",
+                "preparation_s": ready - started, "reconstruction_s": perf_counter() - ready,
                 "traced_events": int(traced.sum()), "input_events": len(rays),
                 "sensitivity": sensitivity_model, "sensitivity_floor": floor,
                 "detector_model": response.details if response else None,

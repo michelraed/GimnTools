@@ -1411,6 +1411,7 @@ class ReconstructionPanel(ttk.Frame):
         box = ttk.LabelFrame(ctrl, text="Parameters", padding=6); box.pack(fill=tk.X)
         self.v = {
             "method": tk.StringVar(value="osem"), "iters": tk.IntVar(value=10),
+            "backend": tk.StringVar(value="CPU"),
             "subsets": tk.IntVar(value=4), "gevery": tk.IntVar(value=5),
             "em_relaxation": tk.DoubleVar(value=1.0),
             "ratio_cap": tk.DoubleVar(value=1e6),
@@ -1438,6 +1439,7 @@ class ReconstructionPanel(ttk.Frame):
             "fbp_legacy_scale": tk.BooleanVar(value=False),
         }
         labeled_combo(box, "method", self.v["method"], METHOD_OPTIONS)
+        labeled_combo(box, "Backend", self.v["backend"], ("CPU", "CUDA"))
         labeled_spin(box, "iterations", self.v["iters"], 1, 500)
         labeled_spin(box, "subsets (OSEM)", self.v["subsets"], 1, 64)
         labeled_spin(box, "EM relaxation", self.v["em_relaxation"], 0.1, 1.0, is_double=True)
@@ -3440,7 +3442,7 @@ class ReconUI(tk.Tk):
         self.recon_panel = ReconstructionPanel(self.recon_workspace, self)
         self.convergence_panel = ConvergencePanel(self.recon_workspace, self, ScrollableColumn)
         self.iteration_panel = IterationPanel(self.recon_workspace, self)
-        self.listmode_panel = ListmodePanel(self.recon_workspace, self)
+        self.listmode_panel = ListmodePanel(self.recon_workspace, self, ScrollableColumn)
         self.recon_workspace.add(self.recon_panel, text="Sinogram reconstruction")
         self.recon_workspace.add(self.listmode_panel, text="List mode")
         self.recon_workspace.add(self.convergence_panel, text="Convergence")
@@ -3531,14 +3533,15 @@ class ReconUI(tk.Tk):
             "sinogram": (self.sino_panel, "var_click"),
             "volume": (self.recon_panel, "var_recon_name var_fmt"),
             "listmode": (self.listmode_panel, "path matrix voxel center energy_enabled energy iterations subsets relaxation ratio_cap "
-                         "sensitivity_floor phantom_support psf_mode psf_fwhm psf_growth psf_lut archive_geometry detector_radius"),
+                         "sensitivity_floor phantom_support psf_mode psf_fwhm psf_growth psf_lut archive_geometry detector_radius "
+                         "backend use_physical physical_lut"),
             "convergence": (self.convergence_panel, "iterations subsets radius background_gap source_count threshold search_radius "
                             "matrix voxel record_steps compare_cor x_axis metric noise_metric title font legend style palette dpi"),
             "iteration_viewer": (self.iteration_panel, "plane fixed_scale"),
             "dicom": (self.dicom_panel, "study equipment"),
             "pseudo": (self.pseudo_panel, "phantom_type diameter height sectors sector_angles rods spheres contrast geometry "
                        "background center_clearance sector_gap primaries steps arc start_angle seed hit_mode root_format "
-                       "root_path gate_unit gate_global"),
+                       "root_path gate_unit gate_global gate_angle_branch gate_angle_unit"),
             "profiles": (self.profiles_panel, "var_name var_pesq var_exp var_fmt"),
             "nema": (self.nema_panel, "plane roi_shape side radius"),
             "plot": (self.plot_panel, "v_aspect v_row_title_pos v_fs_title v_fs_row v_fs_label v_fs_tick v_fs_cbar "
@@ -3547,6 +3550,9 @@ class ReconUI(tk.Tk):
         for group, (panel, names) in panels.items():
             self.session.watch(group, {name: getattr(panel, name) for name in names.split()})
         self.listmode_panel.sync_response_fields()
+        batch_paths = self.session.get("listmode.batch_paths")
+        if isinstance(batch_paths, list):
+            self.listmode_panel.set_batch(path for path in batch_paths if isinstance(path, str) and Path(path).is_file())
         self.session.watch("reconstruction", {key: var for key, var in self.recon_panel.v.items() if key != "cor_mm"})
         for key, panel in (("sinogram", self.sino_panel), ("volume", self.recon_panel), ("nema", self.nema_panel)):
             self.session.watch(f"{key}.display", {"cmap": panel.ctrl.cmap, "scale": panel.ctrl.mode})
@@ -3769,6 +3775,10 @@ class ReconUI(tk.Tk):
                 elif kind == "listmode_ready":
                     self._publish_reconstruction(self._study_generation, payload, "List mode", payload["method"])
                     self.listmode_panel.result.set(payload["info"])
+                elif kind == "listmode_batch_done":
+                    self.listmode_panel.result.set(payload)
+                elif kind == "listmode_batch_status":
+                    self.listmode_panel.batch_status(*payload)
                 elif kind == "dicom_ready":
                     self.dicom_panel.export_ready(payload)
                     self.log(f"[DICOM] saved series in {payload}")
@@ -3883,11 +3893,14 @@ class ReconUI(tk.Tk):
             grid_kw = self._grid_kwargs(params, fov_mm, srange)
             grid_kw['dx_cor_mm'] = entry.get('dx_cor_mm', 0.0)
             grid_kw['dy_cor_mm'] = entry.get('dy_cor_mm', 0.0)
+            if "backend" in params:
+                grid_kw["backend"] = params["backend"].get()
             r = siddon_reconstructor(sino_for_r, **grid_kw)
             self.log(f"[{entry['name']}] grid: {r.n_img}x{r.n_img} px @ "
                      f"{r.voxel_mm:.4f} mm | radial bin {r.sino_pixel:.4f} mm "
                      f"| rays/bin {r.rays_per_bin} | COR {r.cor_mm:+.4f} mm "
                      f"({r.cor_mm/r.sino_pixel:+.3f} bins)")
+            self.log(f"[{entry['name']}] Reconstruction backend · {r.geometry()['backend'].upper()}")
             psf = response = auto_lut = None
             mode = params["response_mode"].get() if "response_mode" in params else "Conventional"
             automatic_psf = mode == "Automatic SV-PSF"

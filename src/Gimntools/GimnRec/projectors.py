@@ -29,53 +29,52 @@ Two properties are preserved on purpose:
    single-ray code, so existing results remain reproducible.
 """
 
+import math
 import numpy as np
 from numba import prange, njit
 
 @njit
-def _siddon_trace(x1, y1, x2, y2, N, pixel_size, grid_min):
+def _siddon_segments(x1, y1, x2, y2, N, pixel_size, grid_min, rows, cols, lens):
     """
     Siddon ray trace — stepping algorithm.
-    Grid: N×N, pixel_size isotropic, grid_min = lower-left corner coord.
-    Returns (rows, cols, lengths) — pre-allocated arrays and the count of valid entries.
+    Fill the supplied buffers and return the number of valid entries.
     """
     eps = 1e-12
     Dx = x2 - x1; Dy = y2 - y1
-    d12 = np.sqrt(Dx*Dx + Dy*Dy)
+    d12 = math.sqrt(Dx*Dx + Dy*Dy)
     max_n = 2*N + 2
-    rows = np.empty(max_n, dtype=np.int32)
-    cols = np.empty(max_n, dtype=np.int32)
-    lens = np.empty(max_n, dtype=np.float64)
     if d12 < eps:
-        return rows, cols, lens, 0
+        return 0
 
     # Alpha range (parametric: P = P1 + alpha*(P2-P1))
     if abs(Dx) > eps:
         ax1 = (grid_min - x1) / Dx
         ax2 = (grid_min + N*pixel_size - x1) / Dx
-        ax_min = min(ax1, ax2); ax_max = max(ax1, ax2)
+        ax_min, ax_max = (ax1, ax2) if ax1 <= ax2 else (ax2, ax1)
     else:
         ax_min = -1e30; ax_max = 1e30
 
     if abs(Dy) > eps:
         ay1 = (grid_min - y1) / Dy
         ay2 = (grid_min + N*pixel_size - y1) / Dy
-        ay_min = min(ay1, ay2); ay_max = max(ay1, ay2)
+        ay_min, ay_max = (ay1, ay2) if ay1 <= ay2 else (ay2, ay1)
     else:
         ay_min = -1e30; ay_max = 1e30
 
-    a_min = max(ax_min, ay_min, 0.0)
-    a_max = min(ax_max, ay_max, 1.0)
+    entry = ax_min if ax_min >= ay_min else ay_min
+    exit_at = ax_max if ax_max <= ay_max else ay_max
+    a_min = entry if entry >= 0.0 else 0.0
+    a_max = exit_at if exit_at <= 1.0 else 1.0
     if a_min >= a_max - eps:
-        return rows, cols, lens, 0
+        return 0
 
     # Starting pixel
     xs = x1 + (a_min + eps) * Dx
     ys = y1 + (a_min + eps) * Dy
     ix = int((xs - grid_min) / pixel_size)
     iy = int((ys - grid_min) / pixel_size)
-    ix = min(max(ix, 0), N-1)
-    iy = min(max(iy, 0), N-1)
+    ix = 0 if ix < 0 else (N - 1 if ix >= N else ix)
+    iy = 0 if iy < 0 else (N - 1 if iy >= N else iy)
 
     # Step direction and delta-alpha
     if Dx > eps:
@@ -102,18 +101,28 @@ def _siddon_trace(x1, y1, x2, y2, N, pixel_size, grid_min):
         if a_cur >= a_max - eps:
             break
         if a_next_x < a_next_y:
-            a_end = min(a_next_x, a_max)
+            a_end = a_next_x if a_next_x <= a_max else a_max
             length = (a_end - a_cur) * d12
             if 0 <= iy < N and 0 <= ix < N and length > eps:
                 rows[cnt]=iy; cols[cnt]=ix; lens[cnt]=length; cnt+=1
             a_cur = a_end; a_next_x += da_x; ix += ix_step
         else:
-            a_end = min(a_next_y, a_max)
+            a_end = a_next_y if a_next_y <= a_max else a_max
             length = (a_end - a_cur) * d12
             if 0 <= iy < N and 0 <= ix < N and length > eps:
                 rows[cnt]=iy; cols[cnt]=ix; lens[cnt]=length; cnt+=1
             a_cur = a_end; a_next_y += da_y; iy += iy_step
-    return rows, cols, lens, cnt
+    return cnt
+
+
+@njit
+def _siddon_trace(x1, y1, x2, y2, N, pixel_size, grid_min):
+    width = 2 * N + 2
+    rows = np.empty(width, dtype=np.int32)
+    cols = np.empty(width, dtype=np.int32)
+    lengths = np.empty(width, dtype=np.float64)
+    count = _siddon_segments(x1, y1, x2, y2, N, pixel_size, grid_min, rows, cols, lengths)
+    return rows, cols, lengths, count
 
 
 @njit(inline='always')
