@@ -19,6 +19,9 @@ As chamadas CUDA executam em um processo separado. Se o runtime encerrar
 esse processo durante a reconstrução, a interface exibe a etapa afetada e
 permite repetir a aquisição em CPU. O diagnóstico nativo é registrado no
 log da interface e no terminal de onde ela foi aberta.
+No Numba anterior a 0.63, o processo também aplica a correção de
+compatibilidade aos símbolos de contexto usados pelo backend ctypes.
+[Correção do Numba CUDA](https://github.com/NVIDIA/numba-cuda/pull/185)
 
 ## Medições na nuvem
 

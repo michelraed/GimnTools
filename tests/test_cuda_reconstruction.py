@@ -30,6 +30,20 @@ def test_backend_names_and_unavailable_cuda():
             reconstruction_accelerator("cuda")
 
 
+def test_legacy_numba_uses_context_symbols_matching_its_ctypes_abi():
+    from types import SimpleNamespace
+    from Gimntools.GimnRec.cuda_reconstruction import _use_legacy_context_symbols
+
+    library = SimpleNamespace(cuCtxGetDevice=object(), cuCtxGetDevice_v2=object(),
+                              cuCtxSynchronize=object(), cuCtxSynchronize_v2=object(),
+                              cuMemAlloc_v2=object())
+    driver = SimpleNamespace(lib=library, _find_api=lambda name: getattr(library, name + "_v2"))
+    _use_legacy_context_symbols(driver)
+    assert driver._find_api("cuCtxGetDevice") is library.cuCtxGetDevice
+    assert driver._find_api("cuCtxSynchronize") is library.cuCtxSynchronize
+    assert driver._find_api("cuMemAlloc") is library.cuMemAlloc_v2
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="This test delivers a POSIX signal")
 def test_native_cuda_failure_preserves_cpu_reconstruction(monkeypatch):
     from Gimntools.GimnRec import cuda_worker

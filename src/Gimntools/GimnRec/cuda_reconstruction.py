@@ -5,7 +5,8 @@ from math import isfinite
 from weakref import ref
 
 import numpy as np
-from numba import cuda, float64, int64
+from numba import __version__ as numba_version
+from numba import config, cuda, float64, int64
 from scipy.sparse import csr_matrix, vstack
 
 from Gimntools.GimnRec.listmode import _trace_3d_segments
@@ -79,10 +80,29 @@ def _pack_rows(columns, coefficients, counts, shape, samples=1, rows=None):
     return csr_matrix((weights, ids, indptr), shape=shape)
 
 
+def _use_legacy_context_symbols(driver):
+    """Use the driver symbols that match the legacy Numba ctypes prototypes."""
+    resolve = driver._find_api
+
+    def find_api(name):
+        if name in ("cuCtxGetDevice", "cuCtxSynchronize"):
+            return getattr(driver.lib, name)
+        return resolve(name)
+
+    driver._find_api = find_api
+
+
 class CudaReconstruction:
     """Own CUDA buffers for a reconstruction and reuse matrix orientations."""
 
     def __init__(self):
+        if not config.ENABLE_CUDASIM and tuple(map(int, numba_version.split(".")[:2])) < (0, 63):
+            from numba.cuda.cudadrv import driver
+
+            # Backport NVIDIA/numba-cuda#185 for the bundled ctypes driver.
+            # Newer NVIDIA drivers provide _v2 symbols with a different ABI.
+            if not getattr(driver, "USE_NV_BINDING", True):
+                _use_legacy_context_symbols(driver.driver)
         if not cuda.is_available():
             raise RuntimeError("CUDA is unavailable. Use CPU or install a compatible NVIDIA driver and CUDA runtime")
         free, _ = cuda.current_context().get_memory_info()
