@@ -3531,7 +3531,7 @@ class ReconUI(tk.Tk):
             "sinogram": (self.sino_panel, "var_click"),
             "volume": (self.recon_panel, "var_recon_name var_fmt"),
             "listmode": (self.listmode_panel, "path matrix voxel center energy_enabled energy iterations subsets relaxation ratio_cap "
-                         "sensitivity_floor phantom_support psf_mode psf_fwhm psf_growth psf_lut"),
+                         "sensitivity_floor phantom_support psf_mode psf_fwhm psf_growth psf_lut archive_geometry detector_radius"),
             "convergence": (self.convergence_panel, "iterations subsets radius background_gap source_count threshold search_radius "
                             "matrix voxel record_steps compare_cor x_axis metric noise_metric title font legend style palette dpi"),
             "iteration_viewer": (self.iteration_panel, "plane fixed_scale"),

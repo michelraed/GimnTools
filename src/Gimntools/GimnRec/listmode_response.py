@@ -1,4 +1,4 @@
-"""Matched 3D response for list mode from the PET pseudo-simulator."""
+"""Matched 3D response for list mode with a saved detector geometry."""
 
 from dataclasses import dataclass
 
@@ -12,8 +12,8 @@ from Gimntools.GimnRec.pseudo_simulator import _crystal_trace, detector_geometry
 
 
 @dataclass(frozen=True)
-class SimulatedListmode:
-    """Scanner settings and per-event step from a simulator archive."""
+class ListmodeAcquisition:
+    """Scanner settings and per-event step from an acquisition archive."""
 
     metadata: dict
     event_steps: np.ndarray
@@ -27,10 +27,14 @@ class ListmodeResponse:
     name: str
     detector_config: dict
     phantom: dict | None
+    details: dict
+
+
+READOUT_TOLERANCE_MM = 5e-5
 
 
 @njit(cache=True, nogil=True)
-def _optical_rays(first, second, first_heads, second_heads, heads, lower, upper,
+def _optical_rays(first, second, first_heads, second_heads, heads, translations, lower, upper,
                   grid, pitch, pixels, face, mu, segmented):
     weights = np.zeros(len(first))
     for i in range(len(weights)):
@@ -38,8 +42,9 @@ def _optical_rays(first, second, first_heads, second_heads, heads, lower, upper,
         if not (np.all(local_a >= lower) and np.all(local_a <= upper)
                 and np.all(local_b >= lower) and np.all(local_b <= upper)):
             continue
-        a, b = heads[first_heads[i]], heads[second_heads[i]]
-        direction = b @ local_b - a @ local_a
+        left, right = first_heads[i], second_heads[i]
+        a, b = heads[left], heads[right]
+        direction = b @ local_b + translations[right] - a @ local_a - translations[left]
         length = np.sqrt(direction @ direction)
         if length == 0.:
             continue
@@ -72,28 +77,67 @@ def _detector_channels(geometry, crystals):
     return np.sort(codes), limit
 
 
-def _hit_channel(points, geometry, rotation, crystals_per_head):
+def _head_readout(points, geometry, rotation):
     scanner = rotation.apply(points[:, np.argsort(geometry.axes)])
-    result = np.full(len(points), -1, dtype=np.int64)
+    heads = np.full(len(points), -1, dtype=np.int64)
+    positions = np.empty((len(points), 2))
     for i, head in enumerate(geometry.heads):
         local = scanner @ head
-        uv = local[:, 1:] @ geometry.grid.T
-        grid_pos = uv / geometry.pitch + (geometry.pixels - 1) / 2
-        pixel = np.rint(grid_pos).astype(np.int64)
-        # Simulator archives saved exact readout centres in mm. The check
-        # verifies that the pose metadata and measurement identify the same bin.
-        valid = ((np.abs(local[:, 0] - geometry.lower[0]) < 1e-5)
-                 & (np.abs(grid_pos - pixel).max(axis=1) < 1e-5)
-                 & np.all((pixel >= 0) & (pixel < geometry.pixels), axis=1))
-        if np.any(result[valid] >= 0):
-            raise ValueError("The pseudo-simulator readout matches more than one crystal head")
-        result[valid] = i * crystals_per_head + pixel[valid, 0] * geometry.pixels[1] + pixel[valid, 1]
-    if np.any(result < 0):
-        raise ValueError("The pseudo-simulator readout does not match its saved detector geometry and poses")
-    return result
+        valid = np.abs(local[:, 0] - geometry.lower[0]) <= READOUT_TOLERANCE_MM
+        if np.any(heads[valid] >= 0):
+            raise ValueError("A list-mode readout matches more than one detector plane")
+        heads[valid] = i
+        positions[valid] = local[valid, 1:] @ geometry.grid.T
+    if np.any(heads < 0):
+        raise ValueError("List-mode hits do not match the detector planes in their saved geometry and poses")
+    return heads, positions
 
 
-def _sample_pairs(codes, total_channels, crystals, geometry, unit):
+def _readout_offsets(rays, steps, geometry, rotations, info):
+    if info.get("petsys_alignment_error"):
+        raise ValueError("PETSYS channel alignment could not be verified: " + info["petsys_alignment_error"])
+    stored = info.get("petsys_bin_offsets_mm")
+    if stored is not None:
+        if not isinstance(stored, dict) or any(name not in stored for name in geometry.names):
+            raise ValueError("PETSYS archive alignment must cover every detector head")
+        values = np.asarray([stored[name] for name in geometry.names], dtype=float)
+        if values.shape != (len(geometry.heads), 2) or not np.isfinite(values).all():
+            raise ValueError("Invalid PETSYS archive alignment offsets")
+        return values, "verified ROOT channels"
+    low = np.full((len(geometry.heads), 2), np.inf)
+    high = np.full_like(low, -np.inf)
+    for i, rotation in enumerate(rotations):
+        selected = steps == i
+        if not selected.any():
+            continue
+        for start in (0, 3):
+            heads, uv = _head_readout(rays[selected, start:start + 3], geometry, rotation)
+            for h in np.unique(heads):
+                values = uv[heads == h]
+                low[h] = np.minimum(low[h], values.min(axis=0))
+                high[h] = np.maximum(high[h], values.max(axis=0))
+    # Seeing both extremal pixels resolves the whole-pitch ambiguity of a
+    # translated lattice. Every hit is verified against that lattice below.
+    span = (geometry.pixels - 1) * geometry.pitch
+    if not np.allclose(high - low, span, rtol=0, atol=2 * READOUT_TOLERANCE_MM):
+        raise ValueError("Cannot identify every PETSYS lattice origin from this NPZ. Export from ROOT with "
+                         "channel IDs or select direct endpoint projection for these data")
+    return (low + high) / 2, "verified complete coordinate lattice"
+
+
+def _hit_channel(points, geometry, rotation, offsets):
+    heads, positions = _head_readout(points, geometry, rotation)
+    nominal = positions - offsets[heads]
+    grid_pos = nominal / geometry.pitch + (geometry.pixels - 1) / 2
+    pixels = np.rint(grid_pos).astype(np.int64)
+    if (np.any((pixels < 0) | (pixels >= geometry.pixels))
+            or np.any(np.abs(grid_pos - pixels) * geometry.pitch > READOUT_TOLERANCE_MM)):
+        raise ValueError("List-mode hits do not match the verified crystal lattice")
+    per_head = int(np.prod(geometry.pixels))
+    return heads * per_head + pixels[:, 0] * geometry.pixels[1] + pixels[:, 1]
+
+
+def _sample_pairs(codes, total_channels, crystals, geometry, translations, unit):
     """Integrate within each active crystal volume, including DOI and both gaps."""
     count = len(crystals)
     subdivisions = unit.shape[1]
@@ -109,50 +153,85 @@ def _sample_pairs(codes, total_channels, crystals, geometry, unit):
         else:
             local[:, :, 1:] = geometry.lower[1:] + columns[:, :, 1:] * (geometry.upper[1:] - geometry.lower[1:])
         hits.append(local.reshape(-1, 3))
-    weights = _optical_rays(*hits, left, right, geometry.heads, geometry.lower, geometry.upper,
+    weights = _optical_rays(*hits, left, right, geometry.heads, translations, geometry.lower, geometry.upper,
                             geometry.grid, geometry.pitch, geometry.pixels, geometry.face,
                             geometry.mu, geometry.segmented)
-    a = np.einsum("nij,nj->ni", geometry.heads[left], hits[0])
-    b = np.einsum("nij,nj->ni", geometry.heads[right], hits[1])
+    a = np.einsum("nij,nj->ni", geometry.heads[left], hits[0]) + translations[left]
+    b = np.einsum("nij,nj->ni", geometry.heads[right], hits[1]) + translations[right]
     return a, b, weights / subdivisions
 
 
-def prepare_listmode_response(rays, shape, spacing, center, simulator, *, progress=None):
+def prepare_listmode_response(rays, shape, spacing, center, acquisition, *, detector_radius_mm=None,
+                              progress=None):
     """Prepare the finite-pair projector and sensitivity for the requested voxel grid."""
     from Gimntools.GimnRec.listmode import _ray_matrix, _volume_grid
 
     grid_shape, spacing, _, corner = _volume_grid(shape, spacing, center)
-    info = simulator.metadata
+    info = acquisition.metadata
+    from_root = info["source"] == "root coincidences"
+    petsys = from_root and info["format"] == "PETSYS"
     config = dict(info["detector_config"])
     if "mu_511_mm_inv" in info:
         config["mu_511_mm_inv"] = info["mu_511_mm_inv"]
-    geometry = detector_geometry(config, info["detector_angles_deg"], info["detector_mapping"])
+    encoded = detector_geometry(config, info["detector_angles_deg"], info["detector_mapping"])
+    if detector_radius_mm is not None:
+        if not petsys or not np.isfinite(detector_radius_mm) or detector_radius_mm <= 0:
+            raise ValueError("Enter a positive radius override for segmented PETSYS data")
+        config["radius"] = float(detector_radius_mm)
+    geometry = encoded if detector_radius_mm is None else detector_geometry(
+        config, info["detector_angles_deg"], info["detector_mapping"],
+    )
     pose_info = info["poses"]
     pose_degrees = np.asarray([pose["angle_deg"] for pose in pose_info], dtype=float)
-    exposure = np.asarray([pose["primaries"] for pose in pose_info], dtype=float)
-    steps = simulator.event_steps
+    if from_root:
+        has_exposure = all("exposure" in pose for pose in pose_info)
+        if not has_exposure and any("exposure" in pose for pose in pose_info):
+            raise ValueError("Provide exposure for every list-mode acquisition pose")
+        exposure = np.asarray([pose["exposure"] for pose in pose_info], dtype=float) if has_exposure else np.ones(len(pose_info))
+    else:
+        exposure = np.asarray([pose["primaries"] for pose in pose_info], dtype=float)
+    # ROOT run IDs need not start at zero or be contiguous.
+    step_ids = np.asarray([pose["step"] for pose in pose_info], dtype=np.int64)
+    sorted_ids, order_ids = np.unique(step_ids, return_index=True)
+    ix = np.searchsorted(sorted_ids, acquisition.event_steps)
     if (not len(pose_degrees) or not np.isfinite(pose_degrees).all()
-            or list(range(len(pose_degrees))) != [pose["step"] for pose in pose_info]
+            or len(sorted_ids) != len(step_ids)
             or not np.isfinite(exposure).all() or np.any(exposure <= 0)
-            or steps.shape != (len(rays),) or np.any((steps < 0) | (steps >= len(pose_degrees)))):
-        raise ValueError("Invalid acquisition steps in the pseudo-simulator NPZ")
+            or ix.shape != (len(rays),) or np.any(ix >= len(sorted_ids))
+            or not np.array_equal(sorted_ids[ix], acquisition.event_steps)):
+        raise ValueError("Invalid acquisition steps in the list-mode NPZ")
+    steps = order_ids[ix]
     exposure /= exposure.sum()
     rotations = [Rotation.from_euler(geometry.axis, angle, degrees=True) for angle in pose_degrees]
     crystals = _crystal_centers(geometry) if geometry.segmented else np.zeros((1, 2))
     pair_codes, channels = _detector_channels(geometry, crystals)
-    readout = geometry.segmented and info["hit_positions"] == "readout plane"
+    readout = geometry.segmented and (from_root or info["hit_positions"] == "readout plane")
+    details = {"detector_radius_mm": float(config["radius"]), "encoded_radius_mm": float(encoded.lower[0] - config["pla_thickness"]),
+               "positions": len(rotations)}
+    if from_root:
+        details["exposure"] = "provided" if has_exposure else "assumed equal"
+    if petsys:
+        offsets, calibration = _readout_offsets(rays, steps, encoded, rotations, info)
+        details.update(alignment=calibration, readout_offsets_mm=dict(zip(geometry.names, offsets.tolist())))
+    else:
+        offsets = np.zeros((len(geometry.heads), 2))
+    # GimnROOT publishes corrected positions in the detector plane. Decode
+    # labels in the translated readout lattice, and integrate within the
+    # correspondingly translated crystal volumes in the scanner frame.
+    local_shifts = np.column_stack((np.zeros(len(offsets)), offsets @ geometry.grid))
+    translations = np.einsum("nij,nj->ni", geometry.heads, local_shifts)
     if readout:
         observed = np.empty(len(rays), dtype=np.int64)
         for step, rotation in enumerate(rotations):
             selected = steps == step
             if not selected.any():
                 continue
-            a = _hit_channel(rays[selected, :3], geometry, rotation, len(crystals))
-            b = _hit_channel(rays[selected, 3:], geometry, rotation, len(crystals))
+            a = _hit_channel(rays[selected, :3], encoded, rotation, offsets)
+            b = _hit_channel(rays[selected, 3:], encoded, rotation, offsets)
             pair = np.minimum(a, b) * channels + np.maximum(a, b)
             ix = np.searchsorted(pair_codes, pair)
             if np.any(ix >= len(pair_codes)) or not np.array_equal(pair_codes[ix], pair):
-                raise ValueError("A pseudo-simulator coincidence must join two different mapped heads")
+                raise ValueError("A crystal-pair coincidence must join two different mapped heads")
             observed[selected] = step * len(pair_codes) + ix
         observed, event_rows = np.unique(observed, return_inverse=True)
     collected = [[] for _ in rotations]
@@ -173,7 +252,7 @@ def prepare_listmode_response(rays, shape, spacing, center, simulator, *, progre
         # without repeating crystal offsets across the axial detector lattice.
         shift = shifts.integers(0, 2**32, (stop - start, 1, 6), dtype=np.uint32)
         unit = ((digital[None, :, :] ^ shift).astype(float) + .5) / 2.**32
-        a, b, weight = _sample_pairs(pair_codes[start:stop], channels, crystals, geometry, unit)
+        a, b, weight = _sample_pairs(pair_codes[start:stop], channels, crystals, geometry, translations, unit)
         # Before the forward/adjoint operations sum the sub-rays belonging
         # to each physical channel, including bins with zero observed counts.
         if readout:
@@ -206,6 +285,7 @@ def prepare_listmode_response(rays, shape, spacing, center, simulator, *, progre
         for i, blocks in enumerate(collected):
             collected[i] = vstack(blocks, format="csr") if blocks else None
         operators = tuple(a for a in collected if a is not None)
-        return ListmodeResponse(sensitivity, operators, event_rows, "finite crystal-pair response",
-                                config, info.get("phantom"))
-    return ListmodeResponse(sensitivity, (), None, "simulated scanner sensitivity", config, info.get("phantom"))
+        name = ("measured PETSYS crystal-pair response" if petsys else "GATE crystal-pair response"
+                if from_root else "finite crystal-pair response")
+        return ListmodeResponse(sensitivity, operators, event_rows, name, config, info.get("phantom"), details)
+    return ListmodeResponse(sensitivity, (), None, "simulated scanner sensitivity", config, info.get("phantom"), details)

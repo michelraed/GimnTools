@@ -339,9 +339,22 @@ grid and the scanner geometry independently of the simulated phantom.
 Exact interaction positions use Siddon rays with the simulated scanner
 sensitivity.
 
+Segmented PETSYS coincidence exports and GATE CrystalID exports use the
+same matched list-mode crystal projector. PETSYS uses verified channel
+alignment from the ROOT export, or verifies the complete translated
+coordinate lattice in older NPZ archives. The alignment translates the
+physical crystal volumes used by both projection and sensitivity. The
+poses come from the archive. ROOT data use equal pose exposure unless
+explicit positive `exposure` values are saved in all pose records.
+**PETSYS radius override (mm, optional)** applies a corrected physical bore
+radius while decoding the positions using their original export radius.
+Use **Use detector geometry saved in NPZ** to select the crystal response
+or direct endpoint projection. ROOT archives with continuous global hit
+coordinates already use direct endpoints.
+
 The scanner calculation samples each crystal pair independently to avoid
 periodic sampling errors on the detector lattice. List-mode sensitivity
-support defaults to 1% of peak for simulator files. A percentage of zero
+support defaults to 1% of peak for modeled detector geometry. A percentage of zero
 keeps all positive measured support. The desktop also uses the cylinder
 stored with a simulated phantom by default. **Use simulated phantom
 cylinder when available** controls this independent spatial prior.

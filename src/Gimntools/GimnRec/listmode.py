@@ -14,25 +14,31 @@ EVENT_COLUMNS = ("x1", "y1", "z1", "E1", "x2", "y2", "z2", "E2")
 CALIBRATION_FIELDS = ("sensitivity", "normalization_lors", "normalization_weights", "detector_model")
 
 
-def _simulator_model(read, accepted):
+def _archive_detector_model(read, accepted):
     description = read("metadata_json")
     try:
         info = json.loads(description.item()) if description is not None else None
     except (ValueError, TypeError):
         return None
-    if not isinstance(info, dict) or info.get("source") != "pseudo-simulator":
+    if not isinstance(info, dict):
+        return None
+    crystal_readout = (info.get("source") == "root coincidences"
+                       and (info.get("detector_config") or {}).get("crystal_type") == "segmented"
+                       and (info.get("format"), info.get("hit_positions")) in
+                       (("PETSYS", "recorded SiPM positions"), ("GATE", "crystal centres")))
+    if not crystal_readout and info.get("source") != "pseudo-simulator":
         return None
     step_index = read("step_index")
     required = {"detector_config", "detector_angles_deg", "detector_mapping", "poses", "hit_positions"}
     if (not required <= info.keys() or step_index is None or step_index.shape != accepted.shape
             or not np.issubdtype(step_index.dtype, np.integer)):
-        raise ValueError("The pseudo-simulator NPZ lacks its detector geometry or per-event acquisition steps")
-    from Gimntools.GimnRec.listmode_response import SimulatedListmode
+        raise ValueError("The acquisition NPZ lacks its detector geometry or per-event acquisition steps")
+    from Gimntools.GimnRec.listmode_response import ListmodeAcquisition
 
-    return SimulatedListmode(info, step_index[accepted])
+    return ListmodeAcquisition(info, step_index[accepted])
 
 
-def load_listmode(path, energy_window=None):
+def load_listmode(path, energy_window=None, *, use_detector_geometry=True):
     """Load an N×8 'events' array or eight named columns. Energies use keV.
 
     Endpoints are in a common object XYZ frame unless a per-event
@@ -84,11 +90,11 @@ def load_listmode(path, energy_window=None):
                 raise ValueError("Specify either sensitivity or normalization_lors")
             if norm_weights is not None and norm_lors is None:
                 raise ValueError("normalization_weights requires normalization_lors")
-            simulator = _simulator_model(read, good)
+            detector_model = _archive_detector_model(read, good) if use_detector_geometry else None
             return rays, {"total_events": len(data), "accepted_events": len(rays),
                           "energy_window_kev": energy_window,
                           "sensitivity": sensitivity, "normalization_lors": norm_lors,
-                          "normalization_weights": norm_weights, "detector_model": simulator}
+                          "normalization_weights": norm_weights, "detector_model": detector_model}
     except (KeyError, AttributeError, BadZipFile) as exc:
         raise ValueError("Select a list-mode NPZ containing events or x1,y1,z1,E1,x2,y2,z2,E2") from exc
 
@@ -215,12 +221,13 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
                          iterations=5, subsets=1, relaxation=0.8, ratio_cap=1e6,
                          sensitivity=None, normalization_lors=None, normalization_weights=None,
                          detector_model=None, psf=None, sensitivity_floor=None, restrict_to_phantom=False,
+                         detector_radius_mm=None,
                          model_progress=None, cache_bytes=128 * 1024**2,
                          progress=None, checkpoint=None, update_callback=None):
     """Reconstruct a (z, y, x) volume with matched 3D Siddon operators.
 
-    A saved pseudo-simulator acquisition supplies the detector-pair response
-    and scanner sensitivity for the selected grid. Other inputs can supply
+    A simulated or measured crystal-readout archive supplies the detector-pair
+    response and sensitivity for the selected grid. Other inputs can supply
     voxel sensitivity or independent scanner normalization LORs. Otherwise
     the approximation is uniform sensitivity on illuminated voxels.
     """
@@ -244,11 +251,14 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
         return _ray_matrix(points, shape_xyz, spacing, corner)
 
     response = None
+    if detector_radius_mm is not None and detector_model is None:
+        raise ValueError("The detector radius override requires a segmented PETSYS acquisition NPZ")
     if detector_model is not None:
         from Gimntools.GimnRec.listmode_response import ListmodeResponse, prepare_listmode_response
 
         response = detector_model if isinstance(detector_model, ListmodeResponse) else prepare_listmode_response(
-            rays, shape, spacing, center, detector_model, progress=model_progress,
+            rays, shape, spacing, center, detector_model, detector_radius_mm=detector_radius_mm,
+            progress=model_progress,
         )
     if psf is not None:
         from Gimntools.GimnRec.listmode_psf import ListmodePSF, prepare_listmode_psf
@@ -319,13 +329,13 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
                 traced[sub] += np.count_nonzero(np.diff(a.indptr))
     if not traced.all():
         raise ValueError("At least one subset has no LOR crossing the image. Check the FOV and coordinate frame")
-    simulator_sensitivity = response is not None and sensitivity is response.sensitivity
-    floor = (.01 if simulator_sensitivity else 0.) if sensitivity_floor is None else sensitivity_floor
+    modeled_sensitivity = response is not None and sensitivity is response.sensitivity
+    floor = (.01 if modeled_sensitivity else 0.) if sensitivity_floor is None else sensitivity_floor
     if not np.isfinite(floor) or not 0 <= floor < 1:
         raise ValueError("List-mode sensitivity floor must be a fraction from 0 to less than 1")
     if sensitivity is None:
         sensitivity = support.astype(float)
-    elif not simulator_sensitivity and np.any(sensitivity[support] == 0):
+    elif not modeled_sensitivity and np.any(sensitivity[support] == 0):
         raise ValueError("Normalization has zero exposure in voxels crossed by measured LORs")
     if psf is not None:
         support = psf.transpose(support.astype(float)) > 0
@@ -374,6 +384,7 @@ def reconstruct_listmode(rays, shape, spacing, *, center=(0, 0, 0),
                 "spacing": tuple(spacing), "center": tuple(center),
                 "traced_events": int(traced.sum()), "input_events": len(rays),
                 "sensitivity": sensitivity_model, "sensitivity_floor": floor,
+                "detector_model": response.details if response else None,
                 "phantom_support": bool(restrict_to_phantom), "sv_psf": psf.name if psf else None,
                 "iterations": iterations, "subsets": subsets}
     return x.reshape(shape), geometry

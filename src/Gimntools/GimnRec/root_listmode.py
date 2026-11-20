@@ -6,7 +6,9 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from Gimntools.GimnRec.data_loaders import require_valid_detector_config
+from Gimntools.GimnRec.detector_response import PETSYS_ID_BRANCHES, _gimnroot_offsets
 from Gimntools.GimnRec.listmode_io import event_rows, object_axes, write_listmode
+from Gimntools.GimnRec.listmode_response import READOUT_TOLERANCE_MM
 from Gimntools.GimnRec.systemSpace import DetectorReference, systemSpace
 from Gimntools.GimnRec.utils import _gate_centers, _gate_points, _gate_run_step, _petsys_points
 
@@ -39,6 +41,7 @@ def export_root_listmode(root_path, output, config, detector_angles, mapping, *,
             raise ValueError(f"ROOT needs the {tree_name} event tree. A histogram cannot supply the two hits")
         tree = root[tree_name]
         available = set(tree.keys())
+        verify_channels = False
         if fmt == "PETSYS":
             rotation = Rotation.from_euler("z", config["det_z_rotation"], degrees=True)
             origin = DetectorReference(np.zeros(3), config["crystal_size"],
@@ -49,6 +52,11 @@ def export_root_listmode(root_path, output, config, detector_angles, mapping, *,
                 branches.extend(f"{name}_{hit}" for name in ("chipID", "SiPMPosX", "SiPMPosY"))
             if not mapping or set(mapping.values()) - detector_angles.keys():
                 raise ValueError("Map the PETSYS chips to detector heads before exporting")
+            verify_channels = (config["crystal_type"] == "segmented"
+                               and list(config["sipm_pixel_n"]) == [8, 8]
+                               and set(PETSYS_ID_BRANCHES[:2]) <= available)
+            if verify_channels:
+                branches.extend(key for key in PETSYS_ID_BRANCHES if key in available)
             metadata["hit_positions"] = "recorded SiPM positions"
         else:
             energy_fields = next(([f"{key}1", f"{key}2"] for key in ("energy", "edep")
@@ -73,6 +81,9 @@ def export_root_listmode(root_path, output, config, detector_angles, mapping, *,
         def batches():
             visited = 0
             by_step, pose_indices = {}, {}
+            alignment_bounds = {}
+            invalid_alignment = 0
+            pitch = np.asarray(config["sipm_pitch"], dtype=float)
             for data in tree.iterate(branches, step_size=chunk_size, library="np"):
                 size = len(data[energy_fields[0]])
                 visited += size
@@ -96,6 +107,19 @@ def export_root_listmode(root_path, output, config, detector_angles, mapping, *,
                 rows = event_rows(*(hit[:, axes] for hit in points), energies)
                 valid = np.isfinite(poses) & np.isfinite(rows).all(axis=1)
                 valid &= np.any(rows[:, :3] != rows[:, 4:7], axis=1)
+                if verify_channels and valid.any():
+                    retained = accepted.copy()
+                    retained[accepted] = valid
+                    for hit in (1, 2):
+                        offsets, good, _, _ = _gimnroot_offsets(data, slice(None), hit, retained, pitch)
+                        invalid_alignment += np.count_nonzero(~good)
+                        chips = data[f"chipID_{hit}"][retained][good]
+                        for chip in np.unique(chips):
+                            points = offsets[good][chips == chip]
+                            head = mapping[int(chip)]
+                            low, high = alignment_bounds.get(head, (np.inf, -np.inf))
+                            alignment_bounds[head] = (np.minimum(low, points.min(axis=0)),
+                                                      np.maximum(high, points.max(axis=0)))
                 if fmt == "PETSYS":
                     pose_values, first_appearance, inverse = np.unique(
                         poses[valid], return_index=True, return_inverse=True,
@@ -114,5 +138,18 @@ def export_root_listmode(root_path, output, config, detector_angles, mapping, *,
             metadata["input_coincidences"] = visited
             metadata["poses"] = [{"step": index, "angle_deg": angle, "coincidences": count}
                                  for (index, angle), count in sorted(by_step.items())]
+            if fmt == "PETSYS" and by_step:
+                metadata["detector_config"]["rotation_angles"] = len(by_step)
+            if verify_channels:
+                unstable = sorted(head for head, (low, high) in alignment_bounds.items()
+                                  if np.any(high - low > 2 * READOUT_TOLERANCE_MM))
+                if invalid_alignment or unstable:
+                    metadata["petsys_alignment_error"] = (
+                        f"{invalid_alignment} invalid channel/index hits, inconsistent translations on {unstable}"
+                    )
+                elif set(mapping.values()) <= alignment_bounds.keys():
+                    metadata["petsys_bin_offsets_mm"] = {
+                        head: ((low + high) / 2).tolist() for head, (low, high) in alignment_bounds.items()
+                    }
 
         return write_listmode(output, batches(), metadata)

@@ -64,6 +64,9 @@ class ListmodePanel(ttk.Frame):
         self.relaxation = tk.DoubleVar(self, 0.8)
         self.ratio_cap = tk.DoubleVar(self, 1e6)
         self.sensitivity_floor = tk.StringVar(self)
+        self.archive_geometry = tk.BooleanVar(self, True)
+        self.detector_radius = tk.StringVar(self)
+        self.path.trace_add("write", lambda *_: self.detector_radius.set(""))
         self.phantom_support = tk.BooleanVar(self, True)
         self.psf_mode = tk.StringVar(self, "Off")
         self.psf_fwhm = tk.StringVar(self, "1.0 1.2")
@@ -94,6 +97,9 @@ class ListmodePanel(ttk.Frame):
         _field(controls, "EM ratio cap", self.ratio_cap)
         response = ttk.LabelFrame(settings, text="Detector response and support", padding=8)
         response.pack(side=tk.LEFT, anchor="n", padx=(12, 0), fill=tk.X, expand=True)
+        ttk.Checkbutton(response, text="Use detector geometry saved in NPZ",
+                        variable=self.archive_geometry).pack(anchor="w")
+        _field(response, "PETSYS radius override (mm, optional)", self.detector_radius)
         _field(response, "Min. sensitivity (% of peak, blank = auto)", self.sensitivity_floor)
         ttk.Checkbutton(response, text="Use simulated phantom cylinder when available",
                         variable=self.phantom_support).pack(anchor="w")
@@ -109,8 +115,8 @@ class ListmodePanel(ttk.Frame):
         self.lut_field.pack(side=tk.LEFT, fill=tk.X, expand=True)
         model.bind("<<ComboboxSelected>>", lambda _event: self.sync_response_fields())
         self.sync_response_fields()
-        ttk.Label(self, text="Pseudo-simulator files use their saved detector response and sensitivity. "
-                  "Other files use NPZ calibration when supplied, or uniform sensitivity.",
+        ttk.Label(self, text="Simulated archives and segmented PETSYS/GATE readouts use their saved geometry. "
+                  "For direct endpoint projection, clear the detector geometry option.",
                   wraplength=600, style="Hint.TLabel").pack(anchor="w", pady=9)
         ttk.Button(self, text="Reconstruct list mode", style="Primary.TButton",
                    command=self._start).pack(anchor="w")
@@ -155,21 +161,25 @@ class ListmodePanel(ttk.Frame):
                 raise ValueError("Select a residual SV-PSF LUT for list mode")
             psf = dict(lut=lut)
         floor = self.sensitivity_floor.get().strip()
+        radius = self.detector_radius.get().strip()
         return Path(path), shape, spacing, energy, dict(center=center, relaxation=self.relaxation.get(),
             ratio_cap=self.ratio_cap.get(), sensitivity_floor=float(floor) / 100. if floor else None,
-            restrict_to_phantom="auto" if self.phantom_support.get() else False, psf=psf)
+            restrict_to_phantom="auto" if self.phantom_support.get() else False, psf=psf,
+            detector_radius_mm=float(radius) if radius and self.archive_geometry.get() else None,
+            use_detector_geometry=self.archive_geometry.get())
 
     def _start(self):
         try:
             path, shape, spacing, energy, options = self.settings()
             iterations, subsets = self.iterations.get(), self.subsets.get()
+            use_geometry = options.pop("use_detector_geometry")
         except (ValueError, tk.TclError) as exc:
             self.app.error(str(exc))
             return
 
         def run():
             try:
-                rays, metadata = load_listmode(path, energy)
+                rays, metadata = load_listmode(path, energy, use_detector_geometry=use_geometry)
                 calibration = {k: metadata.pop(k) for k in CALIBRATION_FIELDS}
                 reported = 0
 
@@ -195,6 +205,9 @@ class ListmodePanel(ttk.Frame):
                     info += f" · sensitivity ≥ {100 * geometry['sensitivity_floor']:g}%"
                 if geometry["phantom_support"]:
                     info += " · phantom cylinder support"
+                model = geometry["detector_model"]
+                if model and model.get("alignment"):
+                    info += f" · radius {model['detector_radius_mm']:g} mm · {model['exposure']} pose exposure"
                 entry = {"name": f"{path.stem}_{method.lower()}", "source": path.stem, "method": method,
                          "volume": volume, "spacing": spacing, "origin": geometry["origin"],
                          "geometry": geometry, "info": info}
@@ -474,7 +487,8 @@ class ConvergencePanel(ttk.Frame):
     @staticmethod
     def _run_listmode(spec, options):
         path, shape, spacing, energy, settings = spec
-        rays, meta = load_listmode(path, energy)
+        settings = settings.copy()
+        rays, meta = load_listmode(path, energy, use_detector_geometry=settings.pop("use_detector_geometry", True))
         calibration = {k: meta[k] for k in CALIBRATION_FIELDS}
 
         def run(iterations, subsets, callback=None, *, update_callback=None):
@@ -494,6 +508,7 @@ class ConvergencePanel(ttk.Frame):
         if calibration["detector_model"] is not None:
             calibration["detector_model"] = prepare_listmode_response(
                 rays, shape, spacing, settings["center"], calibration["detector_model"],
+                detector_radius_mm=settings.pop("detector_radius_mm", None),
             )
         if settings.get("psf"):
             response = calibration["detector_model"]

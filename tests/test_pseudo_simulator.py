@@ -201,6 +201,71 @@ def test_export_petsys_preserves_aligned_hits_and_matches_binning(tmp_path):
     np.testing.assert_allclose(df["angle"], angle)
 
 
+def test_petsys_listmode_decodes_and_projects_an_aligned_full_lattice(tmp_path):
+    import uproot
+
+    cfg = dict(config("PETSYS"), radius=37., sipm_pixel_n=[4, 4], crystal_size=[20., 13.44, 13.44])
+    uv = (np.indices((4, 4)).reshape(2, -1).T - 1.5) * 3.36
+    shape, step = (17, 11, 11), (1.25,) * 3
+    axial_centres = (np.arange(shape[0]) - 8) * step[2]
+    mean_z = []
+    for translation in (0., 3.75):
+        path, archive = tmp_path / f"input_{translation}.root", tmp_path / f"output_{translation}.npz"
+        raw = {
+            "SiPMPosX_1": uv[:, 0] + translation, "SiPMPosY_1": uv[:, 1],
+            "SiPMPosX_2": -uv[:, 0] + translation, "SiPMPosY_2": -uv[:, 1],
+            "chipID_1": np.zeros(len(uv), dtype=int), "chipID_2": np.full(len(uv), 15),
+            "energyCorrected_1": np.full(len(uv), 511.), "energyCorrected_2": np.full(len(uv), 511.),
+            "angleGantry_1": np.zeros(len(uv)),
+        }
+        with uproot.recreate(path) as file:
+            file.mktree("tomographicCoincidences", {k: v.dtype for k, v in raw.items()}).extend(raw)
+        export_root_listmode(path, archive, cfg, ANGLES, MAPPING, chunk_size=3)
+        rays, meta = load_listmode(archive)
+        assert load_listmode(archive, use_detector_geometry=False)[1]["detector_model"] is None
+        response = prepare_listmode_response(rays, shape, step, (0.,) * 3, meta["detector_model"],
+                                             detector_radius_mm=35.)
+        assert response.details["encoded_radius_mm"] == 37.
+        assert response.details["detector_radius_mm"] == 35.
+        assert response.details["positions"] == 1
+        np.testing.assert_allclose(list(response.details["readout_offsets_mm"].values()),
+                                   [[translation, 0.], [translation, 0.]], atol=1e-8)
+        assert response.name == "measured PETSYS crystal-pair response"
+        assert response.details["exposure"] == "assumed equal"
+        norm = response.sensitivity.reshape(shape).sum(axis=(1, 2))
+        mean_z.append(axial_centres @ norm / norm.sum())
+    assert mean_z[1] - mean_z[0] == pytest.approx(3.75, abs=.18)
+
+
+def test_export_petsys_saves_verified_translation_for_sparse_channels(tmp_path):
+    import uproot
+    from Gimntools.GimnRec.detector_response import _GIMNROOT_PIXELS
+
+    root, archive = tmp_path / "channels.root", tmp_path / "channels.npz"
+    data = {"angleGantry_1": np.array([30.]), "energyCorrected_1": np.array([511.]),
+            "energyCorrected_2": np.array([511.])}
+    offsets = {"first": (4.1, -1.55), "second": (5.3, 1.7)}
+    for hit, chip, channel in ((1, 0, 10), (2, 15, 61)):
+        i, j = _GIMNROOT_PIXELS[channel]
+        offset = offsets[MAPPING[chip]]
+        data[f"chipID_{hit}"] = np.array([chip])
+        data[f"channelID_{hit}"] = np.array([channel])
+        data[f"posI_{hit}"] = np.array([i])
+        data[f"posJ_{hit}"] = np.array([j if hit == 2 else (j + 1) % 8])
+        data[f"SiPMPosX_{hit}"] = np.array([(j - 3.5) * 3.36 + offset[0]], dtype=np.float32)
+        data[f"SiPMPosY_{hit}"] = np.array([(3.5 - i) * 3.36 + offset[1]], dtype=np.float32)
+    with uproot.recreate(root) as file:
+        file.mktree("tomographicCoincidences", {k: v.dtype for k, v in data.items()}).extend(data)
+    export = export_root_listmode(root, archive, config("PETSYS"), ANGLES, MAPPING)
+    assert export["detector_config"]["rotation_angles"] == 1
+    for name, offset in offsets.items():
+        np.testing.assert_allclose(export["petsys_bin_offsets_mm"][name], offset, atol=2e-6)
+    rays, meta = load_listmode(archive)
+    prepared = prepare_listmode_response(rays, (15, 15, 15), (2.,) * 3, (0.,) * 3, meta["detector_model"])
+    assert prepared.details["alignment"] == "verified ROOT channels"
+    assert prepared.operators[0].nnz > 0
+
+
 def test_export_gate_preserves_sparse_run_ids_and_converts_mev(tmp_path):
     import uproot
 
@@ -226,8 +291,15 @@ def test_export_gate_preserves_sparse_run_ids_and_converts_mev(tmp_path):
     np.testing.assert_allclose(df["distance"], distance)
     np.testing.assert_allclose(df["angle"], angle)
 
+    rays, meta = load_listmode(output)
+    _, model = reconstruct_listmode(rays, (9, 9, 9), (1.5,) * 3, iterations=1,
+                                    detector_model=meta["detector_model"])
+    assert model["traced_events"] == 2
+    assert model["sensitivity"] == "GATE crystal-pair response"
+
     export_root_listmode(root, output, cfg, ANGLES, MAPPING, gate_global_hits=True)
-    rays, _ = load_listmode(output)
+    rays, meta = load_listmode(output)
+    assert meta["detector_model"] is None
     transformed = Rotation.from_euler("y", -45., degrees=True).apply([[40., 4., 2.], [-41., 3., 1.]])
     np.testing.assert_allclose(rays[1], transformed[:, [0, 2, 1]].ravel())
     export_root_listmode(root, output, dict(cfg, process_as="GeneralGlobalPosition"), ANGLES, MAPPING)
