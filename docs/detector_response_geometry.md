@@ -263,8 +263,11 @@ from 7.0–7.8% at order 3 to 1.5–1.6% at order 5 for both coordinates.
 
 Use **Generate analytical LUT…** in either interface to save the map,
 or select **Automatic SV-PSF** to calculate it with the active geometry,
-COR and image grid during reconstruction. **Save PSF map…** exports the
-map from a selected reconstruction that used the automatic mode. The
+COR and image grid during reconstruction. The automatic mode uses the
+full analytical projector if the fitting error exceeds the generator's
+30% limit or if the fit fails. The log and volume metadata record the
+operator actually used. **Save fitted PSF...** exports the fitted map
+when available, including its errors, for inspection. The
 generator fits each sampled
 projection column using a nonnegative unit-mass kernel composed with
 Siddon. The reference projection is multiplied by the ratio of the

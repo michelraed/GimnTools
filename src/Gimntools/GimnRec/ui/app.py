@@ -153,9 +153,11 @@ class ScrollableColumn(ttk.Frame):
         self.body.bind("<Configure>", self._on_body_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
 
-        # wheel only while the pointer is over this column
-        self.canvas.bind("<Enter>", self._bind_wheel)
-        self.canvas.bind("<Leave>", self._unbind_wheel)
+        window = self.winfo_toplevel()
+        if not getattr(window, "_columns_handle_mouse_wheel", False):
+            for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                window.bind(sequence, self._dispatch_wheel, add="+")
+            window._columns_handle_mouse_wheel = True
 
     # ---- geometry ----
     def _on_body_configure(self, _=None):
@@ -170,29 +172,17 @@ class ScrollableColumn(ttk.Frame):
             self.canvas.itemconfigure(self._win, width=event.width)
 
     # ---- mouse wheel ----
-    def _bind_wheel(self, _=None):
-        self.canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
-        self.canvas.bind_all("<Button-4>", self._on_wheel, add="+")
-        self.canvas.bind_all("<Button-5>", self._on_wheel, add="+")
-
-    def _unbind_wheel(self, _=None):
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            self.canvas.unbind_all(seq)
-
-    def _on_wheel(self, event):
-        try:
-            w = self.winfo_containing(event.x_root, event.y_root)
-        except Exception:
-            w = None
-        if isinstance(w, self._WHEEL_CONSUMERS):
-            return                      # spinbox/combobox/tree handle it
-        if event.num == 4:              # X11
-            delta = -1
-        elif event.num == 5:
-            delta = 1
-        else:                           # Windows / macOS
-            delta = -1 if event.delta > 0 else 1
-        self.canvas.yview_scroll(delta, "units")
+    @staticmethod
+    def _dispatch_wheel(event):
+        widget = event.widget.winfo_containing(event.x_root, event.y_root)
+        if isinstance(widget, ScrollableColumn._WHEEL_CONSUMERS):
+            return
+        while widget is not None:
+            if isinstance(widget, ScrollableColumn):
+                delta = -1 if event.num == 4 or event.delta > 0 else 1
+                widget.canvas.yview_scroll(delta, "units")
+                return "break"
+            widget = widget.master
 
 
 # ===========================================================================
@@ -1394,25 +1384,32 @@ class ReconstructionPanel(ttk.Frame):
         super().__init__(master, padding=6)
         self.app = app
         self.current_recon = None   # entry atualmente mostrado
+        self._displayed_recon = None
 
-        # Left column inside a scrollable canvas: the control stack (parameters,
-        # image grid, COR, reconstruction list, "Save volume") is taller than
-        # the window on small screens, which used to hide the Save button.
+        actions = ttk.Frame(self, padding=(4, 2, 4, 6))
+        actions.pack(fill=tk.X)
+        self.reconstruct_batch_button = ttk.Button(actions, text="Reconstruct batch...", command=self._recon_batch)
+        self.reconstruct_batch_button.pack(side=tk.RIGHT)
+        self.reconstruct_button = ttk.Button(actions, text="Reconstruct", style="Primary.TButton",
+                                             command=self._recon_async)
+        self.reconstruct_button.pack(side=tk.RIGHT, padx=(4, 6))
+        self.var_sino = tk.StringVar()
+        self.backend = tk.StringVar(value="CPU")
+        ttk.Combobox(actions, textvariable=self.backend, values=("CPU", "CUDA"),
+                     state="readonly", width=6).pack(side=tk.RIGHT)
+        ttk.Label(actions, text="Backend").pack(side=tk.RIGHT, padx=4)
+        ttk.Label(actions, text="Sinogram").pack(side=tk.LEFT, padx=(0, 4))
+        self.sino_combo = ttk.Combobox(actions, textvariable=self.var_sino, state="readonly", width=24)
+        self.sino_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
         self.ctrl_scroll = ScrollableColumn(self)
         self.ctrl_scroll.pack(side=tk.LEFT, fill=tk.Y, padx=4)
         ctrl = self.ctrl_scroll.body
 
-        selbox = ttk.LabelFrame(ctrl, text="Sinogram to reconstruct", padding=6)
-        selbox.pack(fill=tk.X)
-        self.var_sino = tk.StringVar()
-        self.sino_combo = ttk.Combobox(selbox, textvariable=self.var_sino,
-                                       state="readonly", width=24)
-        self.sino_combo.pack(fill=tk.X)
-
         box = ttk.LabelFrame(ctrl, text="Parameters", padding=6); box.pack(fill=tk.X)
         self.v = {
             "method": tk.StringVar(value="osem"), "iters": tk.IntVar(value=10),
-            "backend": tk.StringVar(value="CPU"),
+            "backend": self.backend,
             "subsets": tk.IntVar(value=4), "gevery": tk.IntVar(value=5),
             "em_relaxation": tk.DoubleVar(value=1.0),
             "ratio_cap": tk.DoubleVar(value=1e6),
@@ -1440,7 +1437,6 @@ class ReconstructionPanel(ttk.Frame):
             "fbp_legacy_scale": tk.BooleanVar(value=False),
         }
         labeled_combo(box, "method", self.v["method"], METHOD_OPTIONS)
-        labeled_combo(box, "Backend", self.v["backend"], ("CPU", "CUDA"))
         labeled_spin(box, "iterations", self.v["iters"], 1, 500)
         labeled_spin(box, "subsets (OSEM)", self.v["subsets"], 1, 64)
         labeled_spin(box, "EM relaxation", self.v["em_relaxation"], 0.1, 1.0, is_double=True)
@@ -1509,7 +1505,7 @@ class ReconstructionPanel(ttk.Frame):
         map_buttons.pack(fill=tk.X)
         ttk.Button(map_buttons, text="Generate analytical LUT...", command=generate_analytical).pack(
             side=tk.LEFT, fill=tk.X, expand=True)
-        self.save_psf = ttk.Button(map_buttons, text="Save PSF map...", command=self._save_psf_map, state="disabled")
+        self.save_psf = ttk.Button(map_buttons, text="Save fitted PSF...", command=self._save_psf_map, state="disabled")
         self.save_psf.pack(side=tk.LEFT, padx=(4, 0))
 
         # ---- image grid: sinogram-driven (legacy) vs volume-driven --------
@@ -1590,10 +1586,6 @@ class ReconstructionPanel(ttk.Frame):
         ttk.Label(rn, text="recon name", width=10).pack(side=tk.LEFT)
         self.var_recon_name = tk.StringVar(value="")
         ttk.Entry(rn, textvariable=self.var_recon_name, width=18).pack(side=tk.LEFT)
-        ttk.Button(ctrl, text="Reconstruct", style="Primary.TButton",
-                   command=self._recon_async).pack(fill=tk.X, pady=4)
-        ttk.Button(ctrl, text="Reconstruct batch...",
-                   command=self._recon_batch).pack(fill=tk.X, pady=(0, 4))
 
         regbox = ttk.LabelFrame(ctrl, text="Reconstructions", padding=4)
         regbox.pack(fill=tk.X, pady=2)
@@ -1619,13 +1611,14 @@ class ReconstructionPanel(ttk.Frame):
         self.ax_co = self.fig.add_subplot(132)
         self.ax_sa = self.fig.add_subplot(133)
         self.canvas = plot_canvas(self.app, self.fig, view)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         SessionToolbar(self.canvas, view)
         bind_wheel_slices(self.canvas, self._on_scroll)
-        self.ctrl = ImageControls(view, self.draw, default_cmap="gray", default_mode="volume")
+        display_controls = ttk.Frame(view)
+        display_controls.pack(side=tk.BOTTOM, fill=tk.X)
+        self.ctrl = ImageControls(display_controls, self.draw, default_cmap="gray", default_mode="volume")
         self.ctrl.pack(fill=tk.X, pady=2)
-        cc = ttk.Frame(view); cc.pack(fill=tk.X)
-        ttk.Label(view, text="(mouse scroll over each view changes the slice)",
+        cc = ttk.Frame(display_controls); cc.pack(fill=tk.X)
+        ttk.Label(display_controls, text="(mouse scroll over each view changes the slice)",
                   style="Hint.TLabel").pack(anchor="w")
         self.scales = {}
         for key, lbl in [("z", "Z axial"), ("y", "Y coronal"), ("x", "X sagital")]:
@@ -1635,6 +1628,7 @@ class ReconstructionPanel(ttk.Frame):
                           command=lambda e: self.draw())
             s.pack(fill=tk.X)
             self.scales[key] = s
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.var_sino.trace_add("write", lambda *_: self._sync_cor_from_sino())
 
     # ---- listas (chamadas a partir do _drain) ----
@@ -1841,7 +1835,7 @@ class ReconstructionPanel(ttk.Frame):
         if path:
             try:
                 save_analytical_lut(path, payload)
-                self.app.log(f"[SV-PSF] Saved the reconstruction's map to {path}")
+                self.app.log(f"[SV-PSF] Saved the fitted map to {path}")
             except OSError as exc:
                 self.app.error(str(exc))
 
@@ -1856,6 +1850,20 @@ class ReconstructionPanel(ttk.Frame):
         return dxy, dxy, dz / (getattr(self.app, "vol_zoom", 1) or 1)
 
     def on_new_volume(self):
+        if self.current_recon is not self._displayed_recon:
+            if self._displayed_recon is not None:
+                if self.ctrl.mode.get() == "manual":
+                    self._displayed_recon["display_limits"] = (self.ctrl.vmin.get(), self.ctrl.vmax.get())
+                else:
+                    self._displayed_recon.pop("display_limits", None)
+            limits = (self.current_recon or {}).get("display_limits")
+            if limits is not None:
+                self.ctrl.mode.set("manual")
+                self.ctrl.vmin.set(limits[0])
+                self.ctrl.vmax.set(limits[1])
+            elif self.ctrl.mode.get() == "manual":
+                self.ctrl.mode.set("volume")
+            self._displayed_recon = self.current_recon
         has_map = self.current_recon and self.current_recon.get("psf_lut_bytes")
         self.save_psf.state(["!disabled"] if has_map else ["disabled"])
         nz, ny, nx = self.app.volume.shape
@@ -3392,7 +3400,9 @@ class ReconUI(tk.Tk):
         super().__init__()
         self.image_renderer = image_renderer
         self.title("GimnTools — PET Reconstruction (GATE / PETSYS)")
-        self.geometry("1300x850")
+        width = min(1300, self.winfo_screenwidth() - 24)
+        height = min(850, self.winfo_screenheight() - 80)
+        self.geometry(f"{width}x{height}")
 
         # shared state
         self.sino = None
@@ -3421,7 +3431,7 @@ class ReconUI(tk.Tk):
         self.appearance = None
         if themed:
             self.appearance = DesktopAppearance(self, self.store, self.typography)
-            self.minsize(940, 660)
+            self.minsize(min(940, width), min(660, height))
         else:
             style = ttk.Style(self)
             style.configure("TNotebook.Tab", padding=(10, 5))
@@ -3938,19 +3948,38 @@ class ReconUI(tk.Tk):
                     self.log(f"[{entry['name']}] {mode} (exploratory 2D model)")
                     acquisition = entry.get("acquisition")
                     if automatic_psf:
-                        from Gimntools.GimnRec.analytical_response import generate_analytical_lut, pack_analytical_lut
+                        from Gimntools.GimnRec.analytical_response import (
+                            DEFAULT_LUT_FIT_TOLERANCE, generate_analytical_lut, pack_analytical_lut,
+                        )
 
                         self.log(f"[{entry['name']}] Fitting the PSF map on the current grid…")
+                        response = DetectorResponse(r, angles, settings, acquisition)
                         half_support = min(2, (r.n_img - 1) // 2)
                         sample_count = min(5, r.n_img - 2 * half_support)
-                        fitted = generate_analytical_lut(
-                            r, angles, settings, acquisition,
-                            sample_count=sample_count, half_support=half_support,
-                        )
-                        auto_lut = pack_analytical_lut(fitted)
-                        response = DetectorResponse(r, angles, ResponseSettings(), acquisition, lut_bytes=auto_lut)
-                        self.log(f"[{entry['name']}] PSF map fitted in {fitted['elapsed_seconds']:.1f} s"
-                                 f" · maximum projection error {fitted['relative_error'].max():.1%}")
+                        fit = {"tolerance": DEFAULT_LUT_FIT_TOLERANCE, "used_lut": False}
+                        try:
+                            fitted = generate_analytical_lut(
+                                r, angles, settings, acquisition,
+                                sample_count=sample_count, half_support=half_support,
+                                analytical_matrix=response.doi, fit_tolerance=fit["tolerance"],
+                            )
+                        except ValueError as exc:
+                            fit["failure"] = str(exc)
+                            self.log(f"[{entry['name']}] PSF fit unavailable · {exc} · using analytical response")
+                        else:
+                            auto_lut = pack_analytical_lut(fitted)
+                            maximum = fit["maximum_projection_error"] = float(fitted["relative_error"].max())
+                            fit["used_lut"] = maximum <= fit["tolerance"]
+                            if fit["used_lut"]:
+                                response = DetectorResponse(r, angles, ResponseSettings(), acquisition, lut_bytes=auto_lut)
+                                used_model = "fitted PSF"
+                            else:
+                                used_model = "full analytical response"
+                            self.log(f"[{entry['name']}] PSF map fitted in {fitted['elapsed_seconds']:.1f} s"
+                                     f" · maximum projection error {maximum:.1%} · using {used_model}")
+                        response.metadata["automatic_psf"] = fit
+                        if not fit["used_lut"]:
+                            mode += " (analytical projector)"
                     else:
                         response = DetectorResponse(r, angles, settings, acquisition)
                     if use_doi:

@@ -77,6 +77,45 @@ def test_fbp_settings_are_recorded_on_the_reconstruction(ui):
     assert "hann" in rec["info"]
 
 
+def test_reconstruction_actions_and_display_controls_fit_small_window(ui):
+    ui.deiconify()
+    try:
+        ui.geometry("760x480")
+        ui.notebook.select(ui.recon_workspace)
+        p = ui.recon_panel
+        ui.recon_workspace.select(p)
+        ui.update()
+        bottom = ui.winfo_rooty() + ui.winfo_height()
+        for widget in (p.reconstruct_button, p.reconstruct_batch_button, p.sino_combo, p.ctrl, p.scales["z"]):
+            assert widget.winfo_viewable()
+            assert widget.winfo_rooty() + widget.winfo_height() <= bottom
+        p.ctrl_scroll.canvas.event_generate("<MouseWheel>", x=16, y=12, delta=-120)
+        assert p.ctrl_scroll.canvas.yview()[0] > 0
+        p.ctrl_scroll.canvas.yview_moveto(1)
+        ui.update()
+        assert p.reconstruct_button.winfo_viewable()
+    finally:
+        ui.withdraw()
+
+
+def test_manual_display_limits_belong_to_the_selected_reconstruction(ui):
+    p = ui.recon_panel
+    small = _run(ui, "display_low")
+    p.on_new_volume()
+    p.ctrl.vmin.set("0.1")
+    p.ctrl.vmax.set("0.5")
+    p.ctrl.mode.set("manual")
+    bright = {**small, "name": "display_bright", "volume": small["volume"] * 10000}
+    ui._publish_reconstruction(ui._study_generation, bright, "S", "fbp")
+    p.on_new_volume()
+    assert p.ctrl.mode.get() == "volume"
+    assert p.ax_ax.images[0].get_clim()[1] > 1000
+    p.current_recon, ui.volume = small, small["volume"]
+    p.on_new_volume()
+    assert p.ctrl.mode.get() == "manual"
+    assert p.ax_ax.images[0].get_clim() == (0.1, 0.5)
+
+
 @pytest.mark.parametrize("window", list(uiapp.FBP_WINDOWS))
 def test_every_window_runs(ui, window):
     rec = _run(ui, f"r_w_{window}", fbp_window=window, fbp_cutoff=0.6)

@@ -20,6 +20,9 @@ from Gimntools.GimnRec.detector_response import (
 )
 
 
+DEFAULT_LUT_FIT_TOLERANCE = 0.30
+
+
 def analytical_projection_matrix(recon, angles_deg, settings, acquisition):
     """Return P(measured bin | emission in pixel) for the transaxial model.
 
@@ -101,13 +104,15 @@ def _fit_kernel(reference, target, support, regularization):
 
 def generate_analytical_lut(recon, angles_deg, settings, acquisition, path=None, *,
                             sample_count=5, half_support=2, kernel_stride=1,
-                            regularization=1e-4, weights=None, fit_tolerance=0.30):
+                            regularization=1e-4, weights=None, fit_tolerance=DEFAULT_LUT_FIT_TOLERANCE,
+                            analytical_matrix=None):
     """Fit and export a full DOI-inclusive LUT using the conventional Siddon model.
 
     The file is compatible with the regular LUT loader. Separate arrays hold
     the fitted amplitude, analytical efficiency and relative projection error.
     Positions and support offsets fall on the supplied reconstruction grid.
     With no output path, return the fitted map without creating a file.
+    The caller can supply the analytical matrix already built for this grid.
     """
     sample_count, half_support, kernel_stride = map(index, (sample_count, half_support, kernel_stride))
     margin = half_support * kernel_stride
@@ -129,7 +134,11 @@ def generate_analytical_lut(recon, angles_deg, settings, acquisition, path=None,
         sqrt_weights = np.sqrt(weights.ravel())
 
     start = perf_counter()
-    matrix = analytical_projection_matrix(recon, angles_deg, settings, acquisition).tocsc()
+    if analytical_matrix is None:
+        analytical_matrix = analytical_projection_matrix(recon, angles_deg, settings, acquisition)
+    if analytical_matrix.shape != (recon.n_dist * recon.n_ang, n * n):
+        raise ValueError("Analytical projection matrix must match the sinogram and image grids")
+    matrix = analytical_matrix.tocsc()
     angles_rad = np.deg2rad(angles_deg)
     efficiency_map = np.asarray(matrix.sum(axis=0)).reshape(n, n)
     source_support = efficiency_map > 0

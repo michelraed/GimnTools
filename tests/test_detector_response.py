@@ -630,10 +630,13 @@ def test_depth_auto_matches_resolved_order_and_improves_gated_reference():
     assert np.linalg.norm((fitted.doi - reference).data) < np.linalg.norm((coarse - reference).data)
 
 
-def test_automatic_psf_reconstructs_and_saves_the_same_map(tmp_path, monkeypatch):
+@pytest.mark.parametrize("use_lut", [True, False])
+def test_automatic_psf_reconstructs_and_saves_the_fitted_map(tmp_path, monkeypatch, use_lut):
     tk = pytest.importorskip("tkinter")
+    from Gimntools.GimnRec import analytical_response
     from Gimntools.GimnRec.ui import app as ui
 
+    monkeypatch.setattr(analytical_response, "DEFAULT_LUT_FIT_TOLERANCE", 1.1 if use_lut else 0.)
     monkeypatch.setenv("GIMNTOOLS_DB", str(tmp_path / "profiles.db"))
     try:
         app = ui.ReconUI()
@@ -658,11 +661,17 @@ def test_automatic_psf_reconstructs_and_saves_the_same_map(tmp_path, monkeypatch
         p.v["iters"].set(2)
         p.v["response_mode"].set("Automatic SV-PSF")
         p.v["sv_lut"].set("")
-        with pytest.warns(UserWarning, match="SV-PSF"):
+        warning = "SV-PSF" if use_lut else "fit exceeds the error threshold"
+        with pytest.warns(UserWarning, match=warning):
             app.run_recon(p._snapshot(), "Automatic")
         assert not errors, errors
         result = app.reconstructions[-1]
-        assert result["geometry"]["detector_response"]["lut"]["source"] == "automatic"
+        settings = result["geometry"]["detector_response"]
+        assert settings["automatic_psf"]["used_lut"] == use_lut
+        if use_lut:
+            assert settings["lut"]["source"] == "automatic"
+        else:
+            assert settings["analytical"]
         assert np.isfinite(result["volume"]).all() and result["volume"].max() > 0
         assert not list(tmp_path.glob("*.npz"))
         path = tmp_path / "generated_psf.npz"
@@ -673,5 +682,9 @@ def test_automatic_psf_reconstructs_and_saves_the_same_map(tmp_path, monkeypatch
         assert path.read_bytes() == result["psf_lut_bytes"]
         with np.load(path, allow_pickle=False) as data:
             assert data["source_efficiency"].shape == (7, 7)
+        if not use_lut:
+            p.v["response_mode"].set("Analytical detector response")
+            app.run_recon(p._snapshot(), "Automatic")
+            np.testing.assert_allclose(result["volume"], app.reconstructions[-1]["volume"])
     finally:
         app.destroy()
